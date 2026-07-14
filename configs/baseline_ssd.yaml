@@ -1,0 +1,54 @@
+# baseline_ssd.yaml — M1 Baseline 配置
+# 模型：MobileNetV3-Small Backbone + SSD-Lite Detection Head，**不含 LCA**
+# 对应 RQ：RQ1、RQ2 的对照基线（消融实验的"无注意力"版本）
+# 锁死约束：use_lca 必须为 false（M1 阶段），不得修改为 true 进入 M2 后再改
+
+# 继承 default.yaml 公共字段；本文件只覆盖/补充训练相关超参。
+# 注：lead_net/utils/config.py 支持深度合并 default.yaml 作为基础。
+
+inherit: "default.yaml"
+
+experiment:
+  name: "baseline_ssd_m1"
+  tag:   "baseline_no_lca"
+  stage: "M1"
+  rq: ["RQ1", "RQ2"]    # 对应 RQ：作为消融对照基线
+  notes: "M1 Baseline 骨架；超参均为业界常用初值，待 M1 训练阶段按收敛情况调整并回填 CHANGELOG.md"
+
+model:
+  lca:
+    enabled: false   # M1 锁死，禁用 LCA，保证消融对照的模块隔离性
+
+# ---------- 训练超参（初值待调） ----------
+# 注：以下数值为业界 SSD-Lite 训练常用初值，M1 训练阶段按 loss 收敛与硬件情况调整。
+train:
+  epochs: 50            # 占位，待调
+  batch_size: 16        # 占位，RTX 5060 8GB 可能需下调到 8，待调
+  num_workers: 4        # 占位，Windows 下可能需设 0，待调
+  optimizer:
+    name: "sgd"
+    lr: 0.01            # SSD 系常用 0.01，待调
+    momentum: 0.9
+    weight_decay: 0.0005
+  lr_scheduler:
+    name: "cosine"      # 占位，待调
+    warmup_epochs: 0
+  grad_clip: 10.0       # 梯度裁剪，占位，待调
+  ema: false
+  mixed_precision: false # AMP，本地 8GB 显存可考虑开启，待调
+
+# ---------- 评估 ----------
+eval:
+  eval_interval: 5       # 每 5 个 epoch 评估一次
+  iou_thresholds: [0.5]  # mAP@0.5；后续如需 mAP@0.5:0.95 在此扩展
+  score_threshold: 0.05  # 推理置信度阈值（M2 调高以避免候选爆炸；命令行可覆盖）
+  nms:
+    iou_threshold: 0.45  # 占位待调
+    max_detections: 100
+    pre_nms_topk: 1000   # NMS 前每图候选截断数（性能保护，避免几万候选进 NMS）
+
+# ---------- 数据子集 ----------
+data:
+  train_split: "train2017"
+  val_split:   "val2017"
+  use_class_subset: true  # true=使用 class_map 中全部 80 类

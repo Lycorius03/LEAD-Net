@@ -1,0 +1,21 @@
+# lca_ssd.yaml — M2 Baseline + LCA 消融配置
+# 模型：MobileNetV3-Small Backbone + LCA(stride32) + SSD-Lite Detection Head
+# 对应 RQ：RQ1（精度对比）/ RQ2（开销对比），与 baseline_ssd.yaml 构成消融对照对
+#
+# 继承 baseline_ssd.yaml（其再继承 default.yaml）；本文件仅覆盖 LCA 开关与实验标识，
+# 其余超参与 baseline_ssd 完全一致，保证消融对照的单变量原则（只差 LCA 一项）。
+# 训练超参保持与 baseline 相同初值，训练阶段按收敛情况统一调整并回填 CHANGELOG.md。
+
+inherit: "baseline_ssd.yaml"
+
+experiment:
+  name: "lca_ssd_m2"
+  tag:   "baseline_plus_lca"
+  stage: "M2"
+  rq: ["RQ1", "RQ2"]
+  notes: "M2 消融对照：在 baseline_ssd 基础上开启 LCA 注意力，其余条件不变；服务 RQ1/RQ2"
+
+model:
+  lca:
+    enabled: true    # 消融变量：true=实验组（baseline+LCA），对照 baseline_ssd.yaml 的 false
+    reduction: 16    # 通道缩减比；M2 初值，开销极小（10x10 特征图上），训练后按 RQ2 开销回填

@@ -1,0 +1,243 @@
+# default.yaml — 公共默认配置
+# 被 baseline_ssd.yaml 等任务配置继承/覆盖。
+
+paths:
+  dataset_root: "data/coco"
+  output_root:  "outputs"
+  checkpoint_dir:  "outputs/checkpoints"
+  log_dir:         "outputs/logs"
+  experiment_csv_dir: "outputs/experiments"
+  pretrained_cache: null
+
+# ---------- 类别映射：COCO 2017 全 80 类 ----------
+class_map:
+  0: "person"
+  1: "bicycle"
+  2: "car"
+  3: "motorcycle"
+  4: "airplane"
+  5: "bus"
+  6: "train"
+  7: "truck"
+  8: "boat"
+  9: "traffic light"
+  10: "fire hydrant"
+  11: "stop sign"
+  12: "parking meter"
+  13: "bench"
+  14: "bird"
+  15: "cat"
+  16: "dog"
+  17: "horse"
+  18: "sheep"
+  19: "cow"
+  20: "elephant"
+  21: "bear"
+  22: "zebra"
+  23: "giraffe"
+  24: "backpack"
+  25: "umbrella"
+  26: "handbag"
+  27: "tie"
+  28: "suitcase"
+  29: "frisbee"
+  30: "skis"
+  31: "snowboard"
+  32: "sports ball"
+  33: "kite"
+  34: "baseball bat"
+  35: "baseball glove"
+  36: "skateboard"
+  37: "surfboard"
+  38: "tennis racket"
+  39: "bottle"
+  40: "wine glass"
+  41: "cup"
+  42: "fork"
+  43: "knife"
+  44: "spoon"
+  45: "bowl"
+  46: "banana"
+  47: "apple"
+  48: "sandwich"
+  49: "orange"
+  50: "broccoli"
+  51: "carrot"
+  52: "hot dog"
+  53: "pizza"
+  54: "donut"
+  55: "cake"
+  56: "chair"
+  57: "couch"
+  58: "potted plant"
+  59: "bed"
+  60: "dining table"
+  61: "toilet"
+  62: "tv"
+  63: "laptop"
+  64: "mouse"
+  65: "remote"
+  66: "keyboard"
+  67: "cell phone"
+  68: "microwave"
+  69: "oven"
+  70: "toaster"
+  71: "sink"
+  72: "refrigerator"
+  73: "book"
+  74: "clock"
+  75: "vase"
+  76: "scissors"
+  77: "teddy bear"
+  78: "hair drier"
+  79: "toothbrush"
+
+coco_id_to_internal:
+  1: 0
+  2: 1
+  3: 2
+  4: 3
+  5: 4
+  6: 5
+  7: 6
+  8: 7
+  9: 8
+  10: 9
+  11: 10
+  13: 11
+  14: 12
+  15: 13
+  16: 14
+  17: 15
+  18: 16
+  19: 17
+  20: 18
+  21: 19
+  22: 20
+  23: 21
+  24: 22
+  25: 23
+  27: 24
+  28: 25
+  31: 26
+  32: 27
+  33: 28
+  34: 29
+  35: 30
+  36: 31
+  37: 32
+  38: 33
+  39: 34
+  40: 35
+  41: 36
+  42: 37
+  43: 38
+  44: 39
+  46: 40
+  47: 41
+  48: 42
+  49: 43
+  50: 44
+  51: 45
+  52: 46
+  53: 47
+  54: 48
+  55: 49
+  56: 50
+  57: 51
+  58: 52
+  59: 53
+  60: 54
+  61: 55
+  62: 56
+  63: 57
+  64: 58
+  65: 59
+  67: 60
+  70: 61
+  72: 62
+  73: 63
+  74: 64
+  75: 65
+  76: 66
+  77: 67
+  78: 68
+  79: 69
+  80: 70
+  81: 71
+  82: 72
+  84: 73
+  85: 74
+  86: 75
+  87: 76
+  88: 77
+  89: 78
+  90: 79
+
+num_classes: 80
+
+# ---------- 模型基础 ----------
+model:
+  backbone:
+    name: "mobilenet_v3_small"
+    weights: "IMAGENET1K_V1"
+    width_multiplier: 1.0
+    drop_classifier: true
+  detection_head:
+    name: "ssd_lite"
+    anchors: null
+  lca:
+    enabled: false
+    reduction: 16
+    kernel_size: 7
+
+# ---------- 数据预处理 ----------
+data:
+  input_size: 320
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]
+  train_transforms: ["resize", "random_horizontal_flip", "color_jitter", "to_tensor", "normalize"]
+  val_transforms: ["resize", "to_tensor", "normalize"]
+  use_class_subset: true
+
+# ---------- 运行设备 ----------
+device:
+  type: "cuda"
+  cuda_device: 0
+
+# ---------- Tracking ----------
+tracking:
+  max_targets: 3
+  min_hits: 2
+  T_lost: 3
+  iou_threshold: 0.3
+  kalman_dt: 1.0
+  max_history: 30
+  image_center: [160, 160]
+
+# ---------- Obstacle Decision Module ----------
+decision:
+  confidence_threshold: 0.3
+  roi_horizontal_range: [0.175, 0.825]   # 中央 65%
+  roi_vertical_range: [0.40, 1.0]        # 下半 60%
+  area_weight: 0.6
+  confidence_weight: 0.3
+  class_weight: 0.1
+  min_priority: 0.2
+  fusion_iou_threshold: 0.3
+  fusion_dl_penalty: 0.7
+  fusion_cv_confidence: 0.4
+
+# ---------- Traditional CV Fallback ----------
+cv_fallback:
+  ground:
+    sample_ratio: 0.3
+    color_threshold: 40.0
+    min_ground_ratio: 0.1
+  blob:
+    min_area: 50
+    max_area: 50000
+    min_density: 0.3
+
+# ---------- 随机种子 ----------
+seed: 42

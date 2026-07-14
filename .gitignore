@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual envs
+.env
+.venv/
+venv/
+
+# PyTest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Torch model checkpoints (large binary files)
+*.pth
+*.pt
+*.onnx
+*.tflite
+hub/
+
+# Training outputs / experiment artifacts
+outputs/
+runs/
+wandb/
+experiments/
+
+# Dataset (downloaded separately)
+data/
+
+# IDE & editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local environment notes (per-developer)
+environment/
+
+# Project documentation (internal, not for public repo)
+docs/
+
+# Original planning artifacts (historical)
+LEAD-Net_项目文档合集.md
+视觉算法模块实现计划文档-2.docx
