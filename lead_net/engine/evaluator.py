@@ -99,7 +99,8 @@ def _coco_eval_full(
     from pycocotools.coco import COCO
     from pycocotools.cocoeval import COCOeval
 
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False,
+                                      encoding="utf-8") as f:
         json.dump(predictions, f)
         pred_path = f.name
 
