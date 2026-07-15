@@ -18,7 +18,7 @@ training:
   ema: true                  # 指数移动平均（mAP +0.3%~1%）
   ema_decay: 0.9998
   grad_clip_norm: 10.0
-  batch_size: 256             # RTX 5090 32GB 直接使用 256
+  batch_size: 1024            # RTX 5090 32GB，AMP/FP16 下 1.57M 参数模型
 
 # 两阶段训练
 stage1_freeze_backbone:
