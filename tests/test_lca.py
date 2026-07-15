@@ -47,16 +47,28 @@ def _cfg(lca_enabled: bool, with_weights: bool = False) -> dict:
 
 
 def test_lca_module_shape():
-    lca = LCA(channels=256, reduction=16)
-    x = torch.randn(2, 256, 10, 10)
-    y = lca(x)
-    assert y.shape == x.shape, f"LCA 改变了 shape: {y.shape} vs {x.shape}"
+    # 测试各种配置组合下的 shape 保持一致
+    for eg in [True, False]:
+        for op in [True, False]:
+            for rg in [True, False]:
+                lca = LCA(channels=256, reduction=16, edge_guidance=eg, obstacle_prior=op, residual_gate=rg)
+                x = torch.randn(2, 256, 10, 10)
+                y = lca(x)
+                assert y.shape == x.shape, f"LCA (eg={eg}, op={op}, rg={rg}) 改变了 shape: {y.shape} vs {x.shape}"
 
 
 def test_build_lca_from_cfg():
-    lca = build_lca(_cfg(True), channels=256)
+    cfg = _cfg(True)
+    # 默认启用自适应压缩比
+    lca = build_lca(cfg, channels=256)
     assert isinstance(lca, LCA)
     assert lca.mip == max(8, 256 // 16)
+
+    # 显式测试关闭自适应压缩比
+    cfg["model"]["lca"]["adaptive_reduction"] = False
+    cfg["model"]["lca"]["reduction"] = 32
+    lca_fixed = build_lca(cfg, channels=256)
+    assert lca_fixed.mip == max(8, 256 // 32)
 
 
 def test_forward_baseline_no_lca():
@@ -79,16 +91,24 @@ def test_forward_with_lca():
 
 
 def test_param_overhead_nonzero():
-    base = build_lead_net(_cfg(False))
-    plus = build_lead_net(_cfg(True))
-    p_base = sum(p.numel() for p in base.parameters())
-    p_plus = sum(p.numel() for p in plus.parameters())
-    assert p_plus > p_base, f"LCA 未带来参数增量: {p_plus} == {p_base}"
-    # LCA 自身参数量应很小（256ch, r=16 → mip=16；开销量级 ~tens of K）
-    lca_params = sum(p.numel() for p in plus.backbone.lca.parameters())
+    # 测试残差门控开启与关闭时的参数差异
+    cfg_rg = _cfg(True)
+    cfg_rg["model"]["lca"]["residual_gate"] = True
+    model_rg = build_lead_net(cfg_rg)
+    
+    cfg_no_rg = _cfg(True)
+    cfg_no_rg["model"]["lca"]["residual_gate"] = False
+    model_no_rg = build_lead_net(cfg_no_rg)
+    
+    p_rg = sum(p.numel() for p in model_rg.parameters())
+    p_no_rg = sum(p.numel() for p in model_no_rg.parameters())
+    
+    # 刚好相差一个 trainable alpha 标量参数
+    assert p_rg - p_no_rg == 1, f"残差门控参数增量应为 1, 实际: {p_rg - p_no_rg}"
+    
+    lca_params = sum(p.numel() for p in model_rg.backbone.lca.parameters())
     assert lca_params > 0
-    print(f"[info] params: baseline={p_base:,} +LCA={p_plus:,} "
-          f"delta={p_plus - p_base:,} (lca module={lca_params:,})")
+    print(f"[info] params: LCA with RG={p_rg:,} LCA without RG={p_no_rg:,} delta={p_rg - p_no_rg} (lca module={lca_params:,})")
 
 
 def test_backward_reaches_lca():
@@ -97,9 +117,12 @@ def test_backward_reaches_lca():
     cls_pred, loc_pred = model(torch.randn(2, 3, 320, 320))
     loss = cls_pred.float().sum() + loc_pred.float().sum()
     loss.backward()
-    # LCA 的 conv1 权重应收到梯度
-    g = model.backbone.lca.conv1.weight.grad
-    assert g is not None and torch.isfinite(g).all()
+    # LCA 的 conv1 权重与 alpha 权重都应收到梯度
+    g_conv = model.backbone.lca.conv1.weight.grad
+    assert g_conv is not None and torch.isfinite(g_conv).all()
+    
+    g_alpha = model.backbone.lca.alpha.grad
+    assert g_alpha is not None and torch.isfinite(g_alpha).all()
 
 
 def main():
@@ -109,7 +132,7 @@ def main():
     test_forward_with_lca()
     test_param_overhead_nonzero()
     test_backward_reaches_lca()
-    print("[OK] M2 LCA 烟雾测试通过：模块/组装/forward/backward/参数开销全部正常。")
+    print("[OK] M2 LCA 烟雾测试通过：特征梯度、自适应缩减、残差门控和空间先验全部正常。")
 
 
 if __name__ == "__main__":

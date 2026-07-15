@@ -17,5 +17,9 @@ experiment:
 
 model:
   lca:
-    enabled: true    # 消融变量：true=实验组（baseline+LCA），对照 baseline_ssd.yaml 的 false
-    reduction: 16    # 通道缩减比；M2 初值，开销极小（10x10 特征图上），训练后按 RQ2 开销回填
+    enabled: true
+    reduction: 16
+    edge_guidance: true
+    obstacle_prior: true
+    residual_gate: true
+    adaptive_reduction: true

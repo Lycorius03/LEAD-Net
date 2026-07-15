@@ -53,3 +53,14 @@ docs/
 # Original planning artifacts (historical)
 LEAD-Net_项目文档合集.md
 视觉算法模块实现计划文档-2.docx
+
+# Tests (excluded from public repo; run locally)
+tests/
+
+# Claude Code internal files
+.claude/
+memory/
+
+# Dataset archives (already extracted)
+*.zip
+*.docx

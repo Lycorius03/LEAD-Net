@@ -55,14 +55,21 @@ class CvFallback:
         self._last_ground_mask: np.ndarray | None = None
         self._last_foreground_mask: np.ndarray | None = None
 
-    def process(self, image: np.ndarray) -> list[dict[str, Any]]:
+    def process(
+        self,
+        image: np.ndarray,
+        target_size: tuple[int, int] | None = None,
+    ) -> list[dict[str, Any]]:
         """处理一帧图像，返回障碍物候选框列表。
 
         Args:
-            image: (H, W, 3) np.uint8 RGB
+            image: (H, W, 3) np.uint8 RGB，物理摄像头分辨率（如 320×240）。
+            target_size: 可选 (target_w, target_h)，将 bbox 坐标从物理分辨率
+                缩放到目标空间（如 DL 模型的 320×320）。None 时不缩放。
 
         Returns:
-            list[{"bbox": [cx,cy,w,h], "score": float}]
+            list[{"bbox": [cx,cy,w,h], "score": float, "area": int, "source": "CV"}]
+            bbox 为 cxcywh 绝对像素坐标；area = w × h（bbox 面积，非 blob 像素数）。
         """
         # 1. 地面分割
         ground_mask = self._segmenter.segment(image)
@@ -83,13 +90,32 @@ class CvFallback:
             area_norm = blob["area"] / total_pixels
             # 置信度 = 密度 × sqrt(面积归一化)（大且密集的 blob 更可信）
             confidence = blob["density"] * min(1.0, area_norm * 10)
+            # area = bbox_width × bbox_height（与 DL 模块语义对齐，非 blob 像素数）
+            bw, bh = blob["bbox"][2], blob["bbox"][3]
             regions.append({
                 "bbox": blob["bbox"],
                 "score": round(float(confidence), 4),
-                "area": blob["area"],
+                "area": int(round(bw * bh)),
+                "pixel_count": blob["area"],  # 保留 blob 实际像素数供调试
                 "density": blob["density"],
                 "source": "CV",
             })
+
+        # 5. 坐标缩放：将 bbox 从物理分辨率映射到目标空间（如 320×320 DL 模型空间）
+        if target_size is not None:
+            target_w, target_h = target_size
+            scale_x = target_w / max(w, 1)
+            scale_y = target_h / max(h, 1)
+            for r in regions:
+                cx, cy, bw, bh = r["bbox"]
+                r["bbox"] = [
+                    cx * scale_x,
+                    cy * scale_y,
+                    bw * scale_x,
+                    bh * scale_y,
+                ]
+                # area 也同步缩放
+                r["area"] = int(round(r["bbox"][2] * r["bbox"][3]))
 
         return regions
 

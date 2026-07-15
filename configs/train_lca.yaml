@@ -1,24 +1,32 @@
-# train_lca.yaml — 云端训练配置（+LCA, RTX 5090 32GB）
+# train_lca.yaml — +LCA 云端训练配置
 #
-# 继承 lca_ssd.yaml (M2 消融配置)，覆盖训练超参。
-# 训练策略与 train_baseline.yaml 完全一致，保证消融对照单变量原则。
+# 继承 lead_subset.yaml (COCO 7类子集 + KITTI 道路场景)。
+# 训练策略：两阶段 LLRD + EMA + Cosine + Early Stopping。
+# 消融对照：train_baseline.yaml (model.lca.enabled=false, 其余一致)。
 
-inherit: "lca_ssd.yaml"
+inherit: "lead_subset.yaml"
 
 experiment:
   name: "lca_train"
   tag:   "baseline_plus_lca"
   stage: "M5"
   rq: ["RQ1", "RQ2"]
-  notes: "云端 +LCA 正式训练，LLRD + EMA + Auto Batch，除 LCA 开关外与 baseline 一致"
+  notes: "+LCA, COCO 7类均衡子集+KITTI, 两阶段 LLRD + EMA"
 
-# ---------- 训练超参 ----------
+# ─── 覆盖模型：开启 LCA ─────────────────────────────────
+model:
+  lca:
+    enabled: true              # 实验组：开启 LCA
+
+# ─── 训练超参（覆盖 lead_subset 默认值） ──────────────────
 training:
   amp: true
   ema: true
   ema_decay: 0.9998
   grad_clip_norm: 10.0
-  batch_size: 1024            # RTX 5090 32GB，AMP/FP16 下 1.57M 参数模型
+  batch_size: 96              # 12K 数据集, 3 类, RTX 5090 32GB 轻松
+  num_workers: 8
+  prefetch_factor: 4
 
 stage1_freeze_backbone:
   enabled: true
@@ -27,7 +35,8 @@ stage1_freeze_backbone:
 
 stage2_joint_training:
   epochs: 120
-  early_stopping: false
+  early_stopping: false       # 消融实验关早停, 保证对照组 epoch 数一致
+  patience: 0
 
 learning_rate:
   head: 0.001

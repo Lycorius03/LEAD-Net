@@ -112,7 +112,11 @@ class Trainer:
         # ---- 阶段二：LLRD 联合训练 ----
         stage2_cfg = cfg.get("stage2_joint_training", {})
         s2_epochs = stage2_cfg.get("epochs", 120)
+        patience = stage2_cfg.get("patience", 0) if stage2_cfg.get("early_stopping", False) else 0
+        patience_counter = 0
         print(f"\n=== Stage 2: Joint Training ({s2_epochs} epochs) ===")
+        if patience > 0:
+            print(f"[train] early stopping: patience={patience} (on mAP@0.5)")
 
         for epoch in range(1, s2_epochs + 1):
             t0 = time.time()
@@ -173,6 +177,13 @@ class Trainer:
                 best_mAP50 = current_map
                 best_epoch = epoch
                 best_state = copy.deepcopy(self.model.state_dict())
+                patience_counter = 0
+            elif eval_metrics is not None and patience > 0:
+                patience_counter += 1
+                print(f"[train] patience: {patience_counter}/{patience} (best mAP@0.5={best_mAP50:.4f} at epoch {best_epoch})", flush=True)
+                if patience_counter >= patience:
+                    print(f"[train] early stopping triggered at epoch {epoch}", flush=True)
+                    break
 
         # ---- 训练结束 ----
         if cfg.get("checkpoint", {}).get("restore_best_at_end", True) and best_state:

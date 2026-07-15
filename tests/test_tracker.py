@@ -112,24 +112,9 @@ def test_iou_matching_threshold():
     assert len(active) == 2
 
 
-def test_format_stm32():
-    tracker = MultiTargetTracker(min_hits=1)
-    tracker.update([_det([100, 120, 60, 80])])
-    top = tracker.select_priority()
-    msg = MultiTargetTracker.format_stm32(top)
-    assert msg == "x100,y120,a48\r\n"
-
-    msg_none = MultiTargetTracker.format_stm32(None)
-    assert msg_none == "x-1,y-1,a0\r\n"
-
-
-def test_format_experiment():
-    tracker = MultiTargetTracker(min_hits=1)
-    tracker.update([_det([200, 100, 50, 60])])
-    top = tracker.select_priority()
-    msg = MultiTargetTracker.format_experiment(top, 12345)
-    assert msg == "t:12345, x:200, y:100, a:30\n"
-
+# UART 格式测试已迁移至 test_decision.py::test_result_to_uart。
+# format_stm32 / format_experiment 已从 tracker.py 移除 ——
+# 协议输出统一走 DecisionResult.to_uart()。
 
 def test_max_targets_prune():
     """超过 max_targets 时，低优先级 target 被移除。"""
@@ -166,8 +151,6 @@ if __name__ == "__main__":
     test_priority_center_distance()
     test_priority_tiebreaker_area()
     test_iou_matching_threshold()
-    test_format_stm32()
-    test_format_experiment()
     test_max_targets_prune()
     test_track_to_dict()
     print("[OK] test_tracker: all tests passed")

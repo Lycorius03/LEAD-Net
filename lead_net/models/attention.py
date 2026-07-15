@@ -1,44 +1,43 @@
 """LCA (Lightweight Coordinate-aware Attention) 注意力模块。
 
-依据：
-    - docs/PROJECT_CONTEXT.md §核心技术路线：LCA 插入于 Backbone 最后阶段
-    - docs/MODULES.md §2 Attention
-    - 参考论文：Coordinate Attention, CVPR 2021 (arXiv:2103.02907)
-
-设计决策（M2 实现，理由记录于 docs/CHANGELOG.md）：
-    - 直接采用 Coordinate Attention 原始结构（1D 方向池化 + concat + 1x1 通道缩减 +
-      BN + Hardswish + split + 方向门控），不引入额外大核 depthwise 卷积，
-      以最小参数/计算增量满足 RQ2（开销代价）约束。
-    - 激活函数用 nn.Hardswish，与 MobileNetV3-Small Backbone 内部激活一致，
-      保证 INT8 量化（RQ3）时算子图统一、便于 tflite 转换。
-    - 通道缩减比 reduction：M2 取 16（configs/default.yaml 占位值），缩减后通道
-      mip = max(8, C // reduction) 限制下界避免极端低通道导致表达力崩塌（CA 原始实现惯例）。
-    - 输入/输出 shape 保持一致 [B, C, H, W]，不改变特征图尺寸与通道数，
-      满足 ARCHITECTURE.md §模块接口约定（LCA 输入/输出 shape 保持一致）。
-    - 插入位置：Backbone 最后阶段的最小语义特征图（stride 32 投影后 s32, [B,256,10,10]），
-      10x10 特征图上方向注意力计算开销最低，符合"特征图尺寸小、计算开销最低"原则。
+设计决策（面向 OpenMV H7 Plus 的超轻量避障优化）：
+    1. Edge-aware LCA (特征梯度边缘引导)：直接计算特征图相邻像素的差值绝对值（dx, dy），
+       通过无参数的梯度图表征边缘，不引入额外卷积层。
+    2. Adaptive Reduction Ratio (自适应通道压缩)：压缩比根据通道数动态自适应，
+       设定为 max(8, channels // 16)，消除手动配置瓶颈。
+    3. Residual Attention Gate (残差门控)：添加可学习标量参数 alpha（初始为 0.0），
+       输出形式为 Feature + alpha * Attention * Feature，保证训练初期梯度平稳。
+    4. Obstacle Prior Mask (固定空间先验)：在注意力图上叠加热点偏置，强化中下方（避障重点区域）的权重。
 """
 
 from __future__ import annotations
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class LCA(nn.Module):
-    """Lightweight Coordinate-aware Attention。
-
-    基于方向感知的注意力：分别沿 H、W 方向做全局池化，得到方向编码特征，
-    拼接后通道缩减 + 非线性，再分裂回两个方向并经 1x1 conv + sigmoid 生成
-    方向门控权重，与原特征相乘。保留精确空间位置信息（区别于 SENet 的全局标量权重）。
+    """Redesigned Lightweight Coordinate-aware Attention for Obstacle Detection.
 
     Args:
-        channels: 输入/输出通道数 C（LCA 不改变通道数与空间尺寸）。
-        reduction: 通道缩减比 r，中间通道 mip = max(8, C // r)。
+        channels: 输入/输出通道数 C。
+        reduction: 通道缩减比 r，若启用自适应则会被动态覆盖。
+        edge_guidance: 是否启用特征梯度边缘引导。
+        obstacle_prior: 是否启用固定空间先验。
+        residual_gate: 是否启用残差门控。
     """
 
-    def __init__(self, channels: int, reduction: int = 16):
+    def __init__(self, channels: int, reduction: int = 16,
+                 edge_guidance: bool = True, obstacle_prior: bool = True,
+                 residual_gate: bool = True):
         super().__init__()
+        self.channels = channels
+        self.reduction = reduction
+        self.edge_guidance = edge_guidance
+        self.obstacle_prior = obstacle_prior
+        self.residual_gate = residual_gate
+
         mip = max(8, channels // reduction)
         self.mip = mip
 
@@ -51,9 +50,13 @@ class LCA(nn.Module):
         self.bn1 = nn.BatchNorm2d(mip)
         self.act = nn.Hardswish(inplace=True)
 
-        # 各方向 1x1 conv 还原通道数 + sigmoid 门控
+        # 各方向 1x1 conv 还原通道数
         self.conv_h = nn.Conv2d(mip, channels, kernel_size=1, stride=1, padding=0)
         self.conv_w = nn.Conv2d(mip, channels, kernel_size=1, stride=1, padding=0)
+
+        # 残差门控的可学习缩放因子
+        if self.residual_gate:
+            self.alpha = nn.Parameter(torch.zeros(1))
 
         self._init_weights()
 
@@ -67,7 +70,17 @@ class LCA(nn.Module):
         identity = x
         n, c, h, w = x.size()
 
-        # 方向池化
+        # 1. Edge-aware LCA (特征梯度边缘引导)
+        if self.edge_guidance:
+            # 计算水平和垂直方向特征梯度差绝对值
+            dx = torch.abs(x[:, :, :, 1:] - x[:, :, :, :-1])
+            dx = F.pad(dx, (1, 0, 0, 0))  # 填充左侧保持 W 维度
+            dy = torch.abs(x[:, :, 1:, :] - x[:, :, :-1, :])
+            dy = F.pad(dy, (0, 0, 1, 0))  # 填充上方保持 H 维度
+            edge_map = dx + dy
+            g_e = torch.sigmoid(edge_map)
+
+        # 2. Coordinate Attention 位置编码
         x_h = self.pool_h(x)                  # [B,C,H,1]
         x_w = self.pool_w(x).permute(0, 1, 3, 2)  # [B,C,W,1]
 
@@ -85,8 +98,36 @@ class LCA(nn.Module):
         g_h = torch.sigmoid(self.conv_h(x_h))  # [B,C,H,1]
         g_w = torch.sigmoid(self.conv_w(x_w))  # [B,C,1,W]
 
-        # 广播相乘（H 方向权重沿 W 广播、W 方向权重沿 H 广播）
-        out = identity * g_h * g_w
+        # 门控图合并
+        att = g_h * g_w  # [B,C,H,W]
+
+        # 3. Obstacle-aware Prior (固定空间先验)
+        if self.obstacle_prior:
+            # 生成中下方高亮（Y=0.75, X=0.5）的 2D 空间先验 Mask
+            y_coords = torch.linspace(0, 1, steps=h, dtype=x.dtype, device=x.device)
+            x_coords = torch.linspace(0, 1, steps=w, dtype=x.dtype, device=x.device)
+            grid_y, grid_x = torch.meshgrid(y_coords, x_coords, indexing="ij")
+            
+            sigma_y = 0.40
+            sigma_x = 0.35
+            dist_y = (grid_y - 0.75) ** 2 / (2 * (sigma_y ** 2))
+            dist_x = (grid_x - 0.5) ** 2 / (2 * (sigma_x ** 2))
+            prior = torch.exp(-(dist_y + dist_x))
+            prior = 0.5 + 0.7 * prior  # 归一化映射到 [0.5, 1.2]
+            prior = prior.unsqueeze(0).unsqueeze(0)  # [1, 1, H, W]
+            
+            att = att * prior
+
+        # 融合边缘引导
+        if self.edge_guidance:
+            att = att * g_e
+
+        # 4. Residual Attention Gate (残差门控)
+        if self.residual_gate:
+            out = identity + self.alpha * att * identity
+        else:
+            out = identity * att
+
         return out
 
 
@@ -94,9 +135,26 @@ def build_lca(cfg: dict, channels: int) -> LCA:
     """按 cfg.model.lca 构造 LCA 模块。
 
     Args:
-        cfg: 完整配置；读取 cfg["model"]["lca"]["reduction"]。
+        cfg: 完整配置；读取 cfg["model"]["lca"]。
         channels: LCA 所在特征图的通道数。
     """
     lca_cfg: dict = cfg.get("model", {}).get("lca", {})
-    reduction = int(lca_cfg.get("reduction", 16))
-    return LCA(channels=channels, reduction=reduction)
+    
+    edge_guidance = lca_cfg.get("edge_guidance", True)
+    obstacle_prior = lca_cfg.get("obstacle_prior", True)
+    residual_gate = lca_cfg.get("residual_gate", True)
+    
+    # 自适应压缩率
+    adaptive_reduction = lca_cfg.get("adaptive_reduction", True)
+    if adaptive_reduction:
+        reduction = max(8, channels // 16)
+    else:
+        reduction = int(lca_cfg.get("reduction", 16))
+
+    return LCA(
+        channels=channels,
+        reduction=reduction,
+        edge_guidance=edge_guidance,
+        obstacle_prior=obstacle_prior,
+        residual_gate=residual_gate
+    )

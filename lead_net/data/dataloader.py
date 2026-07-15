@@ -19,6 +19,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from .coco_dataset import build_coco_dataset
+from .yolo_dataset import build_yolo_dataset
 
 
 def collate_fn(batch: list[dict[str, Any]]) -> dict[str, Any]:
@@ -49,7 +50,13 @@ def build_dataloader(
         split: "train" | "val"。
         batch_size / num_workers / shuffle：None 时从 cfg 推断。
     """
-    ds = build_coco_dataset(cfg, split=split)
+    data_cfg: dict = cfg.get("data", {})
+    dataset_type: str = data_cfg.get("dataset_type", "coco")
+
+    if dataset_type == "yolo":
+        ds = build_yolo_dataset(cfg, split=split)
+    else:
+        ds = build_coco_dataset(cfg, split=split)
 
     train_cfg: dict = cfg.get("training") or cfg.get("train", {})
     if batch_size is None:
@@ -61,6 +68,8 @@ def build_dataloader(
     if shuffle is None:
         shuffle = (split == "train")
 
+    prefetch = train_cfg.get("prefetch_factor", 4) if num_workers > 0 else None
+
     return DataLoader(
         ds,
         batch_size=batch_size,
@@ -69,4 +78,6 @@ def build_dataloader(
         collate_fn=collate_fn,
         pin_memory=torch.cuda.is_available(),
         drop_last=(split == "train"),
+        persistent_workers=(num_workers > 0),
+        prefetch_factor=prefetch,
     )

@@ -116,7 +116,24 @@ def test_result_no_target():
 
 def test_result_to_uart():
     r = DecisionResult(x=100, y=200, a=4800, risk_score=0.6, state="warning")
-    assert r.to_uart() == "x100,y200,a4800\r\n"
+    # 使用匹配的 model/target 尺寸避免坐标缩放
+    assert r.to_uart(target_w=320, target_h=320, model_w=320, model_h=320) == "x100,y200,a4800\r\n"
+
+
+def test_result_to_uart_no_target():
+    """丢失标志协议：x=-1, y=-1, a=0（与 STM32 约定一致）。"""
+    r = DecisionResult.no_target()
+    assert r.to_uart() == "x-1,y-1,a0\r\n"
+
+
+def test_result_to_uart_scaling():
+    """坐标+面积缩放：模型 320×320 → STM32 物理 320×240。"""
+    r = DecisionResult(x=160, y=160, w=80, h=60, a=4800)
+    # y 缩放因子 = 240/320 = 0.75
+    msg = r.to_uart(target_w=320, target_h=240, model_w=320, model_h=320)
+    # x: 160*320/320=160, y: 160*240/320=120
+    # w: 80*320/320=80, h: 60*240/320=45, a: 80*45=3600
+    assert msg == "x160,y120,a3600\r\n"
 
 
 # ---- DecisionEngine (full pipeline) ----
@@ -231,6 +248,8 @@ if __name__ == "__main__":
     test_risk_prune()
     test_result_no_target()
     test_result_to_uart()
+    test_result_to_uart_no_target()
+    test_result_to_uart_scaling()
     test_engine_basic()
     test_engine_with_tracker()
     test_engine_time_consistency()

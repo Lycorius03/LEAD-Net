@@ -1,0 +1,133 @@
+# lead_subset.yaml — COCO 7 类子集 + KITTI 道路场景
+#
+# 数据集组成:
+#   Train: ~17,500 COCO (7类均衡采样) + 2,500 KITTI = ~20,000 张
+#   Val:   ~2,200 COCO val（含目标类别的全部图片，不采样）
+#   Test:  ~4,900 KITTI（独立泛化测试，不参与训练/调参）
+#
+# 7 类障碍物:
+#   0: person    1: bicycle    2: car       3: backpack
+#   4: suitcase  5: chair      6: bottle
+#
+# 设计原则:
+#   - 不训练完整 COCO（11.8 万张），只用 7 类子集约 1.8 万张
+#   - 类别均衡采样，避免模型只学 person
+#   - KITTI 仅 2,500 张用于道路场景适配，不需要全量 7,000+
+#   - MobileNetV3-Small 已 ImageNet 预训练，SSD-Lite 已 COCO 预训练
+#     Fine-tuning 不是重新学习"什么是人"，而是适应你的任务
+#
+# 生成命令:
+#   python tools/prepare_lead_dataset.py
+#
+# 继承 default.yaml 公共字段。
+
+inherit: "default.yaml"
+
+# ─── 7 类映射 ──────────────────────────────────────────
+num_classes: 7
+class_map:
+  0: "person"
+  1: "bicycle"
+  2: "car"
+  3: "backpack"
+  4: "suitcase"
+  5: "chair"
+  6: "bottle"
+
+coco_id_to_internal:
+  1: 0    # person
+  2: 1    # bicycle
+  3: 2    # car
+  24: 3   # backpack
+  28: 4   # suitcase
+  56: 5   # chair
+  39: 6   # bottle
+
+# ─── 数据集 ───────────────────────────────────────────
+data:
+  dataset_type: "yolo"           # prepare_lead_dataset.py 产出 YOLO-txt 格式
+  dataset_name: "lead_subset"
+  train_image_dir: "images/train"
+  val_image_dir:   "images/val"
+  label_dir:       "labels"
+  use_class_subset: false        # YOLO 格式已预先过滤
+  input_size: 320
+  mean: [0.485, 0.456, 0.406]
+  std:  [0.229, 0.224, 0.225]
+  mosaic: 0.5
+  train_transforms: ["random_horizontal_flip", "color_jitter", "resize", "to_tensor", "normalize"]
+  val_transforms:   ["resize", "to_tensor", "normalize"]
+
+# ─── 路径 ─────────────────────────────────────────────
+paths:
+  dataset_root: "data/lead_subset"
+
+# ─── 模型（M1 基线: 关闭 LCA） ──────────────────────────
+model:
+  backbone:
+    name: "mobilenet_v3_small"
+    weights: "IMAGENET1K_V1"
+    width_multiplier: 1.0
+  lca:
+    enabled: false                # train_lca.yaml 覆盖为 true
+
+# ─── 训练（RTX 5090 32GB） ─────────────────────────────
+training:
+  amp: true
+  ema: true
+  ema_decay: 0.9998
+  grad_clip_norm: 10.0
+  batch_size: 96
+  num_workers: 8
+  prefetch_factor: 4
+
+stage1_freeze_backbone:
+  enabled: true
+  max_epochs: 5
+  loss_change_threshold: 0.05
+
+stage2_joint_training:
+  epochs: 120
+  early_stopping: true
+  patience: 15
+
+learning_rate:
+  head: 0.001
+  lca: 0.0008
+  backbone_last: 0.0003
+  backbone_middle: 0.0001
+  backbone_first: 0.00003
+
+optimizer:
+  name: sgd
+  type: SGD
+  momentum: 0.9
+  nesterov: true
+  weight_decay: 0.0005
+  weight_decay_exclude: ["bn", "bias"]
+
+lr_scheduler:
+  name: cosine
+  warmup_iters: 1000
+  warmup_start_factor: 0.001
+
+checkpoint:
+  save_best_map: true
+  save_last: true
+  restore_best_at_end: true
+
+eval:
+  eval_interval: 5
+  iou_thresholds: [0.5]
+  score_threshold: 0.05
+  nms:
+    iou_threshold: 0.45
+    max_detections: 100
+    pre_nms_topk: 1000
+
+experiment:
+  name: "lead_subset_train"
+  tag:   "7class_balanced"
+  stage: "M5"
+  rq: ["RQ1", "RQ2", "RQ6"]
+  notes: "COCO 7类均衡子集 + KITTI 道路场景, ~20K 张, MobileNetV3-Small 预训练 backbone + SSD-Lite COCO 预训练"

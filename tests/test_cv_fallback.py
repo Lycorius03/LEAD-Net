@@ -126,6 +126,12 @@ def test_cv_full_pipeline():
         assert "score" in r
         assert r["bbox"][2] > 0 and r["bbox"][3] > 0  # w,h > 0
         assert 0.0 <= r["score"] <= 1.0
+        # area = w × h（bbox 面积，与 DL 模块语义对齐）
+        expected_area = int(round(r["bbox"][2] * r["bbox"][3]))
+        assert r["area"] == expected_area, \
+            f"area mismatch: {r['area']} != {expected_area} (w={r['bbox'][2]}, h={r['bbox'][3]})"
+        # pixel_count 保留原始 blob 像素数供调试
+        assert "pixel_count" in r
 
 
 def test_cv_uniform_ground():
@@ -147,6 +153,25 @@ def test_cv_masks_accessible():
     assert cv.dominant_color is not None
 
 
+def test_cv_with_target_size():
+    """target_size 参数：将 bbox 坐标从物理分辨率缩放到目标空间。"""
+    img = _make_uniform_image(h=64, w=64, color=(120, 140, 100))
+    _add_obstacle(img, 20, 15, 24, 24, color=(40, 30, 20))
+    cv = CvFallback()
+    # target_size: 64→320 缩放比例=5x
+    regions = cv.process(img, target_size=(320, 320))
+    assert len(regions) >= 1
+    for r in regions:
+        cx, cy, w, h = r["bbox"]
+        # 原始障碍物约在 (32, 26)，缩放后应约在 (160, 130)
+        assert 100 <= cx <= 220, f"scaled cx out of range: {cx}"
+        assert 80 <= cy <= 180, f"scaled cy out of range: {cy}"
+        assert w > 0 and h > 0
+        # area 也应同步缩放
+        assert r["area"] == int(round(w * h)), \
+            f"scaled area mismatch: {r['area']} != {int(round(w * h))}"
+
+
 if __name__ == "__main__":
     test_ground_uniform()
     test_ground_with_obstacle()
@@ -159,4 +184,5 @@ if __name__ == "__main__":
     test_cv_full_pipeline()
     test_cv_uniform_ground()
     test_cv_masks_accessible()
-    print("[OK] test_cv_fallback: all 11 tests passed")
+    test_cv_with_target_size()
+    print("[OK] test_cv_fallback: all 12 tests passed")

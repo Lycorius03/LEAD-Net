@@ -225,28 +225,9 @@ class MultiTargetTracker:
         return [t for t in self._tracks if t.state in ("tentative", "confirmed")]
 
     # ---- 输出格式 ----
-
-    @staticmethod
-    def format_stm32(track: Track | None) -> str:
-        """STM32 串口输出格式：x%d,y%d,a%d\\r\\n。
-
-        a = int(w * h / 100)，面积映射为整数。
-        无目标时返回 x-1,y-1,a0\\r\\n。
-        """
-        if track is None:
-            return "x-1,y-1,a0\r\n"
-        s = track.kf.state()
-        cx, cy, w, h = int(s[0]), int(s[1]), s[2], s[3]
-        a = max(0, int(w * h / 100))
-        return f"x{cx},y{cy},a{a}\r\n"
-
-    @staticmethod
-    def format_experiment(track: Track, timestamp: int) -> str:
-        """实验数据通道格式：t:%d, x:%d, y:%d, a:%d\\n。"""
-        s = track.kf.state()
-        cx, cy, w, h = int(s[0]), int(s[1]), s[2], s[3]
-        a = max(0, int(w * h / 100))
-        return f"t:{timestamp}, x:{cx}, y:{cy}, a:{a}\n"
+    # UART 协议输出统一走 DecisionResult.to_uart()（decision_engine.py），
+    # 此处不再重复实现，避免 area 语义不一致（如 /100 vs 原始面积）。
+    # USB 实验日志使用 USBLogger（decision_engine.py）。
 
     # ---- internal ----
 
