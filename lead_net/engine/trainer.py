@@ -252,8 +252,13 @@ class Trainer:
         warmup_done = False
 
         total_batches = len(self.train_loader)
+        gpu_proc = getattr(self.train_loader, "gpu_processor", None)
         t_batch_start = time.time()
         for bi, batch in enumerate(self.train_loader):
+            # GPU pipeline: move + normalize on GPU (CPU can start next batch)
+            if gpu_proc is not None:
+                batch = gpu_proc(batch)
+
             # iteration warmup
             global_step = (epoch - 1) * len(self.train_loader) + bi
             if global_step < self._warmup_iters and not warmup_done:
@@ -263,7 +268,7 @@ class Trainer:
             elif not warmup_done and self._warmup_iters > 0:
                 warmup_done = True
 
-            images = batch["image"].to(self.device)
+            images = batch["image"] if gpu_proc is not None else batch["image"].to(self.device)
             gt_boxes, gt_labels = batch["boxes"], batch["labels"]
 
             if self._scaler:

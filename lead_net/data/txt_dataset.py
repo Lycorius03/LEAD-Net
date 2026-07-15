@@ -1,6 +1,6 @@
-"""YOLO-txt 格式检测数据集。
+"""TXT 格式检测数据集（YOLO 标注格式兼容）。
 
-支持的标注格式（YOLO 标准）：
+支持的标注格式（归一化 cxcywh）：
     每张图片对应一个同名的 .txt 文件，每行：
         class_id cx cy w h
     其中 cx,cy,w,h 均归一化到 [0,1]（相对于原图宽高）。
@@ -33,12 +33,12 @@ from torchvision.tv_tensors import BoundingBoxes, BoundingBoxFormat, Image as TV
 from .transforms import build_transforms
 
 
-def build_yolo_dataset(
+def build_txt_dataset(
     cfg: dict,
     split: str = "train",
     transforms: Any = None,
-) -> "YOLODetection":
-    """构建 YOLO-txt 格式检测 Dataset。
+) -> "TXDetection":
+    """构建 TXT 格式检测 Dataset（归一化 cxcywh 标注）。
 
     Args:
         cfg: 完整配置；读取 paths.dataset_root / data.train_image_dir /
@@ -63,7 +63,7 @@ def build_yolo_dataset(
     if transforms is None:
         transforms = build_transforms(cfg, split=split)
 
-    return YOLODetection(
+    return TXDetection(
         images_dir=images_dir,
         labels_dir=labels_dir,
         num_classes=num_classes,
@@ -74,8 +74,8 @@ def build_yolo_dataset(
     )
 
 
-class YOLODetection(Dataset):
-    """YOLO-txt 格式检测数据集。
+class TXDetection(Dataset):
+    """TXT 格式检测数据集（归一化 cxcywh 标注）。
 
     返回与 LEADCOCODetection 相同结构的数据样本，可直接对接
     现有的 DataLoader / collate_fn / transforms / Trainer 管线。
@@ -136,7 +136,7 @@ class YOLODetection(Dataset):
         return self.labels_dir / f"{img_path.stem}.txt"
 
     def _parse_labels(self, label_path: Path) -> tuple[torch.Tensor, torch.Tensor]:
-        """解析 YOLO-txt 标注文件，返回 (boxes_xywh_pixel, labels)。
+        """解析 TXT 标注文件（归一化 cxcywh），返回 (boxes_xywh_pixel, labels)。
 
         boxes 为绝对像素坐标 [x, y, w, h]（xywh，左上角+宽高）。
         labels 为类别 ID（0-indexed）。
@@ -165,10 +165,10 @@ class YOLODetection(Dataset):
         )
 
     @staticmethod
-    def _yolo_cxcywh_to_xywh_pixel(
+    def _cxcywh_to_xywh_pixel(
         boxes: torch.Tensor, img_w: int, img_h: int
     ) -> torch.Tensor:
-        """YOLO 归一化 cxcywh → 绝对像素 xywh（左上角+宽高）。"""
+        """归一化 cxcywh → 绝对像素 xywh（左上角+宽高）。"""
         if boxes.numel() == 0:
             return boxes
         cx = boxes[:, 0] * img_w
@@ -193,7 +193,7 @@ class YOLODetection(Dataset):
     def _mosaic(self, idx: int) -> dict[str, Any]:
         """Mosaic 数据增强：4 张图拼成 1 张。
 
-        参考 YOLOv5 实现：随机选取 3 张额外图片，在 input_size×input_size
+        参考 Mosaic 增强实现：随机选取 3 张额外图片，在 input_size×input_size
         画布上按随机中心点划分为 4 个象限，每张图放入一个象限并调整 bbox 偏移。
         """
         s = self.input_size
@@ -296,7 +296,7 @@ class YOLODetection(Dataset):
         w_img, h_img = image.size
 
         boxes_cxcywh, labels = self._parse_labels(label_path)
-        boxes_xyxy = self._yolo_cxcywh_to_xywh_pixel(boxes_cxcywh, w_img, h_img)
+        boxes_xyxy = self._cxcywh_to_xywh_pixel(boxes_cxcywh, w_img, h_img)
 
         tv_img = TVImage(image)
         boxes_bb = BoundingBoxes(
