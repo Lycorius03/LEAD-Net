@@ -102,6 +102,8 @@ class Trainer:
         if stage1_cfg.get("enabled", False):
             print("\n=== Stage 1: Freeze Backbone ===")
             self._setup_optimizer(freeze_backbone=True)
+            print(f"[train] DataLoader ready, {len(self.train_loader)} batches/epoch "
+                  f"(first batch loads {self.train_loader.batch_size} images, may take 1-2 min)...")
             s1_epochs = self._run_stage1(stage1_cfg, eval_interval)
             print(f"[train] stage1 completed after {s1_epochs} epochs")
         else:
@@ -114,6 +116,8 @@ class Trainer:
 
         for epoch in range(1, s2_epochs + 1):
             t0 = time.time()
+            lrs = [f"{pg['lr']:.2e}" for pg in self._optimizer.param_groups]
+            print(f"\nEpoch {epoch}/{s2_epochs}  lr={lrs}", flush=True)
             train_m = self._train_one_epoch(epoch)
             train_loss = train_m["cls_loss"] + train_m["loc_loss"]
 
@@ -122,6 +126,7 @@ class Trainer:
 
             eval_metrics = None
             if (epoch % eval_interval == 0 or epoch == s2_epochs) and self.val_loader:
+                print(f"running COCO mAP evaluation...", flush=True)
                 eval_metrics = self._run_eval()
 
             epoch_time = time.time() - t0
@@ -130,10 +135,17 @@ class Trainer:
             gpu_mem = _gpu_memory_mb(self.device)
 
             # print
-            val_s = f"val_loss={val_loss:.4f}" if val_loss else ""
-            map_s = f"mAP@0.5={eval_metrics.get('mAP@0.5',0):.4f}" if eval_metrics else ""
-            print(f"[train] e{epoch:3d}/{s2_epochs} | loss={train_loss:.4f} {val_s} | {map_s} | "
-                  f"lr={lr:.2e} | {epoch_time:.1f}s | {samples_per_sec:.0f} img/s")
+            val_s = f"val_loss: {val_loss:.4f}  val_cls: {val_m['cls_loss']:.4f}  val_loc: {val_m['loc_loss']:.4f}" if val_m else ""
+            map_s = ""
+            if eval_metrics:
+                map_s = f"mAP@0.5: {eval_metrics.get('mAP@0.5',0):.4f}  mAP@0.5:0.95: {eval_metrics.get('mAP@0.5:0.95',0):.4f}  mAP@0.75: {eval_metrics.get('mAP@0.75',0):.4f}"
+            print(f"train_loss: {train_loss:.4f}  cls_loss: {train_m['cls_loss']:.4f}  loc_loss: {train_m['loc_loss']:.4f}  "
+                  f"grad: {train_m['grad_norm']:.2f}", flush=True)
+            if val_s:
+                print(val_s, flush=True)
+            if map_s:
+                print(map_s, flush=True)
+            print(f"lr: {lr:.2e}  {epoch_time:.0f}s  {samples_per_sec:.0f} img/s  GPU: {gpu_mem:.0f}MB", flush=True)
 
             # log CSV
             if self.collector:
@@ -189,10 +201,25 @@ class Trainer:
         stable_count = 0
 
         for epoch in range(1, max_eps + 1):
+            t0 = time.time()
+            lrs = [f"{pg['lr']:.2e}" for pg in self._optimizer.param_groups]
+            print(f"\nEpoch {epoch}/{max_eps} (freeze backbone)  lr={lrs}", flush=True)
             train_m = self._train_one_epoch(epoch)
             loss = train_m["cls_loss"] + train_m["loc_loss"]
+            elapsed = time.time() - t0
             change = abs(prev_loss - loss) / max(abs(prev_loss), 1e-8)
-            print(f"[stage1] e{epoch}/{max_eps} loss={loss:.4f} d={change:.4f}")
+
+            if self.val_loader:
+                val_m = self._validate_one_epoch()
+                val_loss = val_m["cls_loss"] + val_m["loc_loss"] if val_m else 0.0
+            else:
+                val_m, val_loss = None, 0.0
+
+            val_s = f"val_loss: {val_loss:.4f}  val_cls: {val_m['cls_loss']:.4f}  val_loc: {val_m['loc_loss']:.4f}" if val_m else ""
+            print(f"train_loss: {loss:.4f}  cls_loss: {train_m['cls_loss']:.4f}  loc_loss: {train_m['loc_loss']:.4f}  "
+                  f"grad: {train_m['grad_norm']:.2f}  Δ: {change:.4f}  {elapsed:.0f}s", flush=True)
+            if val_s:
+                print(val_s, flush=True)
 
             if change < threshold:
                 stable_count += 1
@@ -201,7 +228,7 @@ class Trainer:
             prev_loss = loss
 
             if stable_count >= 2:
-                print(f"[stage1] loss stabilized (d<{threshold} for 2 epochs) → unfreezing")
+                print(f"loss stabilized (Δ<{threshold} for 2 epochs) → unfreezing", flush=True)
                 return epoch
 
         return max_eps
@@ -213,6 +240,8 @@ class Trainer:
         total_cls, total_loc, total_grad, n = 0.0, 0.0, 0.0, 0
         warmup_done = False
 
+        total_batches = len(self.train_loader)
+        t_batch_start = time.time()
         for bi, batch in enumerate(self.train_loader):
             # iteration warmup
             global_step = (epoch - 1) * len(self.train_loader) + bi
@@ -256,6 +285,18 @@ class Trainer:
             total_loc += loc_loss.item()
             total_grad += total_norm  # type: ignore[assignment]
             n += 1
+
+            # progress: every 20 batches + first + last
+            if bi == 0 or (bi + 1) % 20 == 0 or bi == total_batches - 1:
+                avg_cls = total_cls / max(n, 1)
+                avg_loc = total_loc / max(n, 1)
+                elapsed = time.time() - t_batch_start
+                lr = self._optimizer.param_groups[0]["lr"]
+                print(f"batch {bi+1:4d}/{total_batches}, "
+                      f"cls: {avg_cls:.4f}  loc: {avg_loc:.4f}  "
+                      f"loss: {avg_cls+avg_loc:.4f}  "
+                      f"grad: {total_grad/max(n,1):.2f}  "
+                      f"lr: {lr:.2e}  {elapsed:.0f}s", flush=True)
 
         if self._scheduler:
             self._scheduler.step()
