@@ -10,4 +10,4 @@
 设计原则见 docs/ARCHITECTURE.md。
 """
 
-__version__ = "0.1.0-m4"
+__version__ = "0.1.0.dev4"
