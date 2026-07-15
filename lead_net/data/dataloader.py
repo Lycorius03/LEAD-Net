@@ -51,7 +51,7 @@ def build_dataloader(
     """
     ds = build_coco_dataset(cfg, split=split)
 
-    train_cfg: dict = cfg.get("train", {})
+    train_cfg: dict = cfg.get("training") or cfg.get("train", {})
     if batch_size is None:
         batch_size = train_cfg.get("batch_size", 16)
     if num_workers is None:

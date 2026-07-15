@@ -39,7 +39,7 @@ def main() -> int:
         print(f"[info] {torch.cuda.get_device_name(device)} ({gb:.1f}GB)")
 
     # 数据
-    nw = 0 if sys.platform == "win32" else cfg.get("train", {}).get("num_workers", 4)
+    nw = 0 if sys.platform == "win32" else (cfg.get("training") or cfg.get("train", {})).get("num_workers", 4)
     train_loader = build_dataloader(cfg, split="train", num_workers=nw)
     val_loader = build_dataloader(cfg, split="val", num_workers=nw)
     if args.max_samples:

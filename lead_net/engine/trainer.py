@@ -353,7 +353,7 @@ class Trainer:
     def _rebuild_loader(self, batch_size: int) -> DataLoader:
         from lead_net.data import build_dataloader
         import sys
-        nw = 0 if sys.platform == "win32" else self.cfg.get("train", {}).get("num_workers", 4)
+        nw = 0 if sys.platform == "win32" else (self.cfg.get("training") or self.cfg.get("train", {})).get("num_workers", 4)
         return build_dataloader(self.cfg, split="train", batch_size=batch_size, num_workers=nw)
 
 
