@@ -14,16 +14,16 @@ from typing import Any
 class ROIParams:
     """ROI 区域参数（归一化比例，相对画面尺寸）。"""
 
-    h_start: float = 0.175   # 水平起点（左边界，占画面宽度比例）
-    h_end: float = 0.825     # 水平终点（右边界）
-    v_start: float = 0.40    # 垂直起点（上边界）
+    h_start: float = 0.20    # 水平起点（左边界，占画面宽度比例）→ 中央 60%
+    h_end: float = 0.80      # 水平终点（右边界）
+    v_start: float = 0.50    # 垂直起点（上边界）→ 下半 50%
     v_end: float = 1.0       # 垂直终点（下边界，1.0=画面底部）
 
     @classmethod
     def from_cfg(cls, cfg: dict) -> "ROIParams":
         d = cfg.get("decision", {})
-        hr = d.get("roi_horizontal_range", [0.175, 0.825])
-        vr = d.get("roi_vertical_range", [0.40, 1.0])
+        hr = d.get("roi_horizontal_range", [0.20, 0.80])
+        vr = d.get("roi_vertical_range", [0.50, 1.0])
         return cls(h_start=hr[0], h_end=hr[1], v_start=vr[0], v_end=vr[1])
 
     def contains(self, cx: float, cy: float, img_w: int, img_h: int) -> bool:

@@ -50,15 +50,15 @@ def test_tentative_quick_removal():
 
 
 def test_confirmed_lost_timeout():
-    """confirmed 目标丢失超过 T_lost 帧后删除。"""
-    tracker = MultiTargetTracker(min_hits=2, T_lost=3)
+    """confirmed 目标丢失超过 T_lost+TTL 帧后删除。"""
+    tracker = MultiTargetTracker(min_hits=2, T_lost=3, max_ttl=1)
     d = _det([100, 120, 60, 80])
     tracker.update([d])
     tracker.update([d])
     assert len(tracker.confirmed()) == 1
 
-    # 丢失 T_lost+1=4 帧
-    for _ in range(4):
+    # TTL=1→0 (1 frame), then T_lost=3 more → total 4 frames
+    for _ in range(5):
         tracker.update([])
     assert len(tracker.all_active()) == 0
 

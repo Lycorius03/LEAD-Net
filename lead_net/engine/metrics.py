@@ -40,6 +40,9 @@ _DEFAULT_TRAIN_FIELDS = [
     "epoch_time_s",
     "samples_per_sec",
     "gpu_memory_mb",
+    "grad_norm",
+    "gpu_model",
+    "seed",
     "timestamp",
 ]
 

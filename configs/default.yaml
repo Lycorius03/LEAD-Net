@@ -210,23 +210,52 @@ tracking:
   max_targets: 3
   min_hits: 2
   T_lost: 3
+  max_ttl: 5               # 目标生命周期：丢失 N 帧后降级为 lost（仍 Kalman 预测）
   iou_threshold: 0.3
   kalman_dt: 1.0
   max_history: 30
   image_center: [160, 160]
 
-# ---------- Obstacle Decision Module ----------
+# ---------- Obstacle Decision Module (5-layer, final design) ----------
 decision:
-  confidence_threshold: 0.3
-  roi_horizontal_range: [0.175, 0.825]   # 中央 65%
-  roi_vertical_range: [0.40, 1.0]        # 下半 60%
-  area_weight: 0.6
-  confidence_weight: 0.3
-  class_weight: 0.1
-  min_priority: 0.2
-  fusion_iou_threshold: 0.3
+  confidence_threshold: 0.5               # Layer 1: confidence filter
+  roi_horizontal_range: [0.20, 0.80]      # Layer 2: central 60%
+  roi_vertical_range: [0.50, 1.0]         # Layer 2: bottom 50%
+  reference_distance_cm: 50               # Layer 3: calibration reference distance
+  use_monocular_distance: false           # Layer 3: monocular distance fallback (off)
+  camera_focal_length_px: 300.0           # Layer 3: focal length for monocular mode
+  fusion_iou_threshold: 0.3               # DL/CV fusion
   fusion_dl_penalty: 0.7
   fusion_cv_confidence: 0.4
+  # Area thresholds — calibration table per danger group
+  # large_moving: person(0), car(2), bicycle(1), bus(5), truck(7), motorcycle(3)
+  # small_static: chair(56), bottle(39), backpack(24), suitcase(28), etc.
+  # default: all other COCO classes
+  calibration:
+    large_moving:
+      30:  20000.0    # px² at 30cm
+      50:   6000.0    # px² at 50cm
+      100:  1500.0    # px² at 100cm
+    small_static:
+      30:  12000.0
+      50:   4000.0
+      100:  1000.0
+    default:
+      30:  15000.0
+      50:   5000.0
+      100:  1200.0
+  # Unified risk scoring
+  risk:
+    w_center: 0.25          # 中心距离权重
+    w_area: 0.35            # 面积权重
+    w_growth: 0.25          # 面积增长率权重
+    w_confidence: 0.15      # 置信度权重
+    ema_alpha: 0.3          # EMA 平滑系数
+    growth_window: 5        # 增长率计算窗口（帧数）
+    warning_threshold: 0.4  # 超过此值 → warning
+    danger_threshold: 0.7   # 超过此值 → danger
+  # 时间一致性
+  min_consecutive_high_risk: 3  # 连续高风险帧数才稳定输出
 
 # ---------- Traditional CV Fallback ----------
 cv_fallback:

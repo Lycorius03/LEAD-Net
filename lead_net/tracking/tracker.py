@@ -46,9 +46,27 @@ class Track:
     age: int = 0
     time_since_update: int = 0
     hits: int = 0
+    ttl: int = 5              # 目标生命周期：丢失多少帧后降级为 lost
+    decision_state: str = "detected"  # detected|tracking|warning|danger|lost
     cls: int = -1
     conf: float = 0.0
     history: deque = field(default_factory=lambda: deque(maxlen=30))
+
+    @property
+    def area(self) -> float:
+        s = self.kf.state()
+        return float(s[2] * s[3])
+
+    @property
+    def velocity(self) -> tuple[float, float, float, float]:
+        """返回 (vx, vy, vw, vh) 供增长率计算。"""
+        s = self.kf.state()
+        return (float(s[4]), float(s[5]), float(s[6]), float(s[7]))
+
+    def predict_position(self, steps: int = 1) -> tuple[float, float]:
+        """预测 steps 帧后的 (cx, cy) 位置（遮挡恢复）。"""
+        s = self.kf.state()
+        return (float(s[0] + s[4] * steps), float(s[1] + s[5] * steps))
 
     def to_dict(self) -> dict[str, Any]:
         s = self.kf.state()
@@ -59,10 +77,12 @@ class Track:
             "vx": float(s[4]), "vy": float(s[5]),
             "vw": float(s[6]), "vh": float(s[7]),
             "state": self.state,
+            "decision_state": self.decision_state,
             "cls": self.cls,
             "conf": self.conf,
             "age": self.age,
             "time_since_update": self.time_since_update,
+            "ttl": self.ttl,
         }
 
 
@@ -86,12 +106,14 @@ class MultiTargetTracker:
         max_targets: int = 3,
         min_hits: int = 2,
         T_lost: int = 3,
+        max_ttl: int = 5,
         iou_threshold: float = 0.3,
         kalman_dt: float = 1.0,
         image_center: tuple[float, float] = (160.0, 160.0),
     ):
         self.max_targets = max_targets
         self.min_hits = min_hits
+        self.max_ttl = max_ttl
         self.T_lost = T_lost
         self.iou_threshold = iou_threshold
         self.kalman_dt = kalman_dt
@@ -140,6 +162,8 @@ class MultiTargetTracker:
             t.kf.update(z)
             t.time_since_update = 0
             t.hits += 1
+            t.ttl = self.max_ttl   # 重置 TTL
+            t.decision_state = "tracking"
             t.cls = det.get("category_id", -1)
             t.conf = det.get("score", 0.0)
             s = t.kf.state()
@@ -157,6 +181,7 @@ class MultiTargetTracker:
                 id=self._next_id, kf=kf, cls=det.get("category_id", -1),
                 conf=det.get("score", 0.0), hits=1,
             )
+            track.ttl = self.max_ttl
             if track.hits >= self.min_hits:
                 track.state = "confirmed"
             self._next_id += 1
@@ -164,10 +189,13 @@ class MultiTargetTracker:
             track.history.append((float(s[0]), float(s[1]), float(s[2]), float(s[3])))
             self._tracks.append(track)
 
-        # 5. 未匹配 track → 标记丢失
+        # 5. 未匹配 track → 标记丢失，TTL 递减
         for track_idx in unmatched_tracks:
             t = active[track_idx]
             t.time_since_update += 1
+            t.ttl = max(0, t.ttl - 1)
+            if t.ttl == 0:
+                t.decision_state = "lost"
 
         # 6. 生命周期：deleted 清理
         self._cleanup()
@@ -176,6 +204,11 @@ class MultiTargetTracker:
         self._prune()
 
         return self.confirmed()
+
+    def get_lost_predictions(self) -> list[Track]:
+        """返回已丢失但仍在 Kalman 预测中的 tracks（遮挡恢复）。"""
+        return [t for t in self._tracks if t.decision_state == "lost"
+                and t.state != "deleted"]
 
     def confirmed(self) -> list[Track]:
         """返回所有 confirmed 状态的 tracks，按优先级排序。"""
@@ -292,16 +325,21 @@ class MultiTargetTracker:
         return inter / union if union > 1e-8 else 0.0
 
     def _cleanup(self) -> None:
-        """删除超时或 marked deleted 的 tracks。"""
+        """删除超时或 marked deleted 的 tracks。
+
+        TTL 机制：lost 状态时保留 Kalman 预测，允许遮挡恢复。
+        仅当 TTL=0 且超过 T_lost 时才真正删除。
+        """
         new = []
         for t in self._tracks:
             if t.state == "deleted":
                 continue
             if t.state == "tentative" and t.time_since_update > 0:
-                # tentative 一帧未匹配即删除（快速剔除误检）
                 continue
-            if t.state == "confirmed" and t.time_since_update > self.T_lost:
-                continue
+            # confirmed track: TTL 耗尽 + 超时 → 删除
+            if t.state == "confirmed":
+                if t.ttl == 0 and t.time_since_update > self.T_lost:
+                    continue
             new.append(t)
         self._tracks = new
 

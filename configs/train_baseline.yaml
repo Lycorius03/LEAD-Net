@@ -1,0 +1,60 @@
+# train_baseline.yaml — 云端训练配置（Baseline, 无 LCA, RTX 5090 32GB）
+#
+# 继承 baseline_ssd.yaml (M1 消融配置)，覆盖/补充训练相关超参。
+# 训练策略依据：docs/TRAIN-1.md（LLRD + 两阶段 + EMA + Auto Batch）
+
+inherit: "baseline_ssd.yaml"
+
+experiment:
+  name: "baseline_train"
+  tag:   "baseline_no_lca"
+  stage: "M5"
+  rq: ["RQ1", "RQ2"]
+  notes: "云端 Baseline 正式训练，两阶段 LLRD + EMA + Auto Batch"
+
+# ---------- 训练超参（云端 RTX 5090 专用） ----------
+training:
+  amp: true                  # 混合精度训练
+  ema: true                  # 指数移动平均（mAP +0.3%~1%）
+  ema_decay: 0.9998
+  grad_clip_norm: 10.0
+  batch_size: 256             # RTX 5090 32GB 直接使用 256
+
+# 两阶段训练
+stage1_freeze_backbone:
+  enabled: true
+  max_epochs: 5              # 上限（实际按 loss/mAP 动态判断解冻时机）
+  loss_change_threshold: 0.05  # 连续 2 epoch loss 变化 < 此值 → 提前解冻
+
+stage2_joint_training:
+  epochs: 120
+  early_stopping: false
+
+# 五级分层学习率
+learning_rate:
+  head: 0.001
+  lca: 0.0008               # 当前 LCA 未启用，此值实际不生效
+  backbone_last: 0.0003
+  backbone_middle: 0.0001
+  backbone_first: 0.00003
+
+# 优化器（覆盖 baseline_ssd 中的基础 SGD 配置）
+optimizer:
+  name: sgd
+  type: SGD
+  momentum: 0.9
+  nesterov: true
+  weight_decay: 0.0005
+  weight_decay_exclude: ["bn", "bias"]
+
+# 学习率调度（覆盖基础配置）
+lr_scheduler:
+  name: cosine
+  warmup_iters: 1000         # 按 iteration 而非 epoch
+  warmup_start_factor: 0.001
+
+# Checkpoint
+checkpoint:
+  save_best_map: true
+  save_last: true
+  restore_best_at_end: true
