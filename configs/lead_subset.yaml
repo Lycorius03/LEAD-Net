@@ -1,13 +1,23 @@
 # lead_subset.yaml — COCO 7 类子集 + KITTI 道路场景
 #
 # 数据集组成:
-#   Train: ~17,500 COCO (7类均衡采样) + 2,500 KITTI = ~20,000 张
-#   Val:   ~2,200 COCO val（含目标类别的全部图片，不采样）
-#   Test:  ~4,900 KITTI（独立泛化测试，不参与训练/调参）
+#   Train: ~13,500 COCO (7类) + KITTI = ~13,576 张 (实测)
+#   Val:   3,256 张 (实测)
+#
+# 数据集诊断 (2026-07-17, tools/dataset_stats_txt.py):
+#   - 73% 目标为 COCO 标准小目标 (<1024px²)
+#   - person 107K vs backpack 10K GT instances = 10:1 不平衡
+#   - class 6 (bottle) 自然锚框匹配率仅 8.8%
+#   - 每图平均正样本仅 4.2 个, 52% 图片<5 个正样本
 #
 # 7 类障碍物:
 #   0: person    1: bicycle    2: car       3: backpack
 #   4: suitcase  5: chair      6: bottle
+#
+# 类别权重 (2026-07-17 数据集诊断: person 107K vs backpack 10K):
+#   w_i = (median_count / count_i)^0.2, 归一化到均值=1
+#   person 0.73x, backpack 1.17x — 温和纠正 10:1 不平衡
+class_weights: [0.73, 1.08, 0.83, 1.17, 1.16, 0.99, 1.04]
 #
 # 设计原则:
 #   - 不训练完整 COCO（11.8 万张），只用 7 类子集约 1.8 万张
@@ -85,15 +95,19 @@ training:
   num_workers: 16
   prefetch_factor: 8
 
+# 损失函数配置
+loss:
+  overlap_threshold: 0.35    # [CHANGED] 0.5→0.35 (73%小目标, 8.8% bottle匹配率)
+
 stage1_freeze_backbone:
   enabled: true
   max_epochs: 5
   loss_change_threshold: 0.05
 
 stage2_joint_training:
-  epochs: 120
+  epochs: 180               # [CHANGED] 120→180 (mAP@120仍在上升, 预留收敛空间)
   early_stopping: true
-  patience: 15
+  patience: 25              # [CHANGED] 15→25 (更长训练, 更多耐心)
 
 learning_rate:
   head: 0.003            # [CHANGED] 0.001→0.003 (LR Range Test: min_loss/10)
@@ -114,7 +128,7 @@ lr_scheduler:
   name: cosine
   warmup_iters: 500             # [CHANGED] 1000→500 (约 2.5 epoch @212 batch)
   warmup_start_factor: 0.01     # [CHANGED] 0.001→0.01 (10x 提速 warmup)
-  eta_min_factor: 0.0           # cosine 结束 LR = base_lr * factor（0.0 为降到零）
+  eta_min_factor: 0.01          # [FIXED] 0.0→0.01: 不衰减到零，保留 1% base_lr 继续学习
 
 checkpoint:
   save_best_map: true

@@ -82,7 +82,8 @@ def main():
 
     # ─── 模型 + 损失 ───
     model = build_lead_net(cfg).to(device)
-    criterion = MultiBoxLoss(cfg)
+    num_cls = cfg.get("num_classes", 7) + 1
+    criterion = MultiBoxLoss(num_classes=num_cls, input_size=cfg.get("data", {}).get("input_size", 320))
 
     # ─── 优化器 + EMA ───
     train_cfg = cfg.get("training", {})

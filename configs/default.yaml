@@ -25,7 +25,7 @@ model:
     drop_classifier: true
   detection_head:
     name: "ssd_lite"
-    anchors: null
+    anchors: null                # null=使用 detection_head.py 内置 scale_configs
   lca:
     enabled: false
     reduction: 16
@@ -33,6 +33,11 @@ model:
     obstacle_prior: true
     residual_gate: true
     adaptive_reduction: true
+
+# ---------- 损失函数 ----------
+loss:
+  overlap_threshold: 0.35        # IoU 正样本匹配阈值 (默认 0.5→0.35, 适配小目标数据集)
+  neg_pos_ratio: 3               # 难负例挖掘比例
 
 # ---------- 数据预处理 ----------
 data:

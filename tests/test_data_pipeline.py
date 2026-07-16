@@ -93,10 +93,10 @@ def _make_fixture():
 @_fixture
 def mini_cfg():
     root, _, _ = _make_fixture()
-    from lead_net.utils import load_config
+    from lead_net.utils import load_config, resolve_paths_in
     cfg = load_config("configs/baseline_ssd.yaml")
     cfg = resolve_paths_in(cfg)
-    cfg["paths"]["dataset_root"] = root
+    cfg["paths"]["dataset_root"] = str(root)
     cfg["data"]["input_size"] = 64  # 用小尺寸加快测试
     cfg["data"]["train_split"] = "train2017"
     cfg["data"]["val_split"] = "val2017"
@@ -155,7 +155,7 @@ if __name__ == "__main__":
     from lead_net.utils import load_config, resolve_paths_in
     cfg = load_config("configs/baseline_ssd.yaml")
     cfg = resolve_paths_in(cfg)
-    cfg["paths"]["dataset_root"] = FIXTURE_ROOT
+    cfg["paths"]["dataset_root"] = str(FIXTURE_ROOT)
     cfg["data"]["input_size"] = 64
     cfg["data"]["train_split"] = "train2017"
     cfg["data"]["val_split"] = "val2017"

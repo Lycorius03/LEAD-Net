@@ -260,8 +260,26 @@ class TXDetection(Dataset):
                 all_labels.append(int(labels[j].item()))
 
         if not all_boxes_xywh:
-            all_boxes_xywh = [[0, 0, 1, 1]]
-            all_labels = [0]
+            # Mosaic 后无有效框 → 返回空标注。
+            # 原因：伪造的 [[0,0,1,1]] 永远不会匹配任何 anchor (IoU<0.5)，
+            # 但空列表让下游明确知道"此图无目标"。
+            boxes_t = torch.zeros((0, 4), dtype=torch.float32)
+            labels_t = torch.zeros(0, dtype=torch.long)
+            tv_img = TVImage(mosaic_img)
+            boxes_bb = BoundingBoxes(
+                boxes_t,
+                format=BoundingBoxFormat.XYWH,
+                canvas_size=(s, s),
+            )
+            sample = {
+                "image": tv_img,
+                "boxes": boxes_bb,
+                "labels": labels_t,
+                "image_id": torch.tensor([idx], dtype=torch.long),
+            }
+            if self._transforms is not None:
+                sample = self._transforms(sample)
+            return sample
 
         boxes_t = torch.tensor(all_boxes_xywh, dtype=torch.float32)
         labels_t = torch.tensor(all_labels, dtype=torch.long)

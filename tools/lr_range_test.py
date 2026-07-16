@@ -66,7 +66,10 @@ def main():
     model = build_lead_net(cfg)
     model.to(device)
     model.train()
-    criterion = MultiBoxLoss(cfg)
+    criterion = MultiBoxLoss(
+        num_classes=cfg.get("num_classes", 7) + 1,
+        input_size=cfg.get("data", {}).get("input_size", 320),
+    )
 
     # ─── 优化器（统一 LR 组用于测试） ───
     param_groups = build_llrd_param_groups(model, cfg, freeze_backbone=False)

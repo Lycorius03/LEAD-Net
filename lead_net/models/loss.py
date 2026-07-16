@@ -22,17 +22,24 @@ class MultiBoxLoss(nn.Module):
         overlap_threshold: 正样本匹配 IoU 阈值
         neg_pos_ratio: 负样本/正样本最大比例
         variance: 偏移编码 variance (cx,cy 用 variances[0], w,h 用 variances[1])
+        class_weights: 各类别权重 (len=num_classes-1, 不含背景), None=均等
     """
 
     def __init__(self, num_classes: int, input_size: int = 320,
-                 overlap_threshold: float = 0.5, neg_pos_ratio: int = 3,
-                 variance: tuple[float, float] = (0.1, 0.2)):
+                 overlap_threshold: float = 0.35, neg_pos_ratio: int = 3,
+                 variance: tuple[float, float] = (0.1, 0.2),
+                 class_weights: list[float] | None = None):
         super().__init__()
         self.num_classes = num_classes
         self.input_size = input_size
         self.overlap_threshold = overlap_threshold
         self.neg_pos_ratio = neg_pos_ratio
         self.variance = variance
+        if class_weights is not None:
+            self.register_buffer("class_weights",
+                                 torch.tensor(class_weights, dtype=torch.float32))
+        else:
+            self.class_weights = None
 
     def forward(self, cls_pred: torch.Tensor, loc_pred: torch.Tensor,
                 default_boxes: torch.Tensor,
@@ -101,9 +108,10 @@ class MultiBoxLoss(nn.Module):
             loc_pred[pos], loc_t[pos], reduction="sum"
         )
 
-        # 分类损失
+        # 分类损失（含类别权重）
         cls_loss = _hard_negative_mining(
-            cls_pred, conf_t, pos, num_pos, self.neg_pos_ratio
+            cls_pred, conf_t, pos, num_pos, self.neg_pos_ratio,
+            class_weights=self.class_weights,
         )
 
         # Normalize by num_pos（数值稳定性：min=10 防止单样本梯度爆炸）
@@ -119,6 +127,77 @@ class MultiBoxLoss(nn.Module):
             loc = torch.tensor(0.0, device=device, requires_grad=True)
 
         return cls, loc
+
+    @staticmethod
+    def diagnose_matching(default_boxes: torch.Tensor,
+                          gt_boxes: list[torch.Tensor],
+                          gt_labels: list[torch.Tensor],
+                          input_size: int = 320,
+                          overlap_threshold: float = 0.5) -> dict:
+        """诊断锚框匹配质量——不参与梯度计算，纯统计。
+
+        返回:
+            avg_pos_per_img: 每图平均正样本锚框数
+            pct_imgs_zero_pos: 零正样本图片占比 (%)
+            pos_distribution: {min, p25, p50, p75, max} 分位数
+            per_class_pos: 各类别正样本数 dict
+            unmatched_gt: 未匹配 GT 数量 (best_iou < threshold)
+        """
+        import numpy as np
+        device = default_boxes.device
+        N = default_boxes.size(0)
+
+        pos_counts = []
+        per_class_pos = {}
+        unmatched = 0
+        total_gt = 0
+
+        for b, (gtb, gtl) in enumerate(zip(gt_boxes, gt_labels)):
+            if len(gtb) == 0:
+                pos_counts.append(0)
+                continue
+
+            gtb_norm = gtb.float() / input_size
+            gtb_xyxy = _xywh_to_xyxy(gtb_norm)
+
+            # 统计匹配前: 每个 GT 的最佳 IoU
+            from torchvision.ops import box_iou
+            d_xyxy = _cxcywh_to_xyxy(default_boxes)
+            ious = box_iou(d_xyxy, gtb_xyxy.to(device))  # [N, M]
+            best_per_gt = ious.max(dim=0).values  # [M]
+            unmatched += (best_per_gt < overlap_threshold).sum().item()
+
+            matches = _match(default_boxes, gtb_xyxy.to(device), overlap_threshold)
+            pos_mask = matches >= 0
+            n_pos = pos_mask.sum().item()
+            pos_counts.append(n_pos)
+
+            # Per-class positive anchors
+            if n_pos > 0:
+                matched_gts = matches[pos_mask]
+                for gt_idx in matched_gts.unique():
+                    cls = int(gtl[gt_idx].item())
+                    count = (matched_gts == gt_idx).sum().item()
+                    per_class_pos[cls] = per_class_pos.get(cls, 0) + count
+
+            total_gt += len(gtb)
+
+        pos_arr = np.array(pos_counts)
+        stats = {
+            "avg_pos_per_img": float(pos_arr.mean()),
+            "pct_imgs_zero_pos": float((pos_arr == 0).mean() * 100),
+            "pos_p50": float(np.median(pos_arr)),
+            "pos_p25": float(np.percentile(pos_arr, 25)),
+            "pos_p75": float(np.percentile(pos_arr, 75)),
+            "pos_min": int(pos_arr.min()),
+            "pos_max": int(pos_arr.max()),
+            "per_class_pos": per_class_pos,
+            "unmatched_gt": unmatched,
+            "total_gt": total_gt,
+            "unmatched_pct": round(unmatched / max(total_gt, 1) * 100, 1),
+            "total_anchors": N,
+        }
+        return stats
 
 
 def _match(default_boxes: torch.Tensor, gt_boxes: torch.Tensor,
@@ -173,13 +252,28 @@ def _encode(default_boxes: torch.Tensor, matched_gt: torch.Tensor,
 
 def _hard_negative_mining(cls_pred: torch.Tensor, conf_t: torch.Tensor,
                           pos: torch.Tensor, num_pos: torch.Tensor,
-                          neg_pos_ratio: int) -> torch.Tensor:
-    """Hard negative mining 后的分类 CrossEntropy 损失。"""
+                          neg_pos_ratio: int,
+                          class_weights: torch.Tensor | None = None) -> torch.Tensor:
+    """Hard negative mining 后的分类 CrossEntropy 损失。
+
+    Args:
+        class_weights: [num_classes-1] 各类别权重（不含背景），None=均等
+    """
     import math
     B = cls_pred.size(0)
+    C = cls_pred.size(-1)
+
+    # 构造 per-pixel loss 权重：背景 (class=0) weight=1.0，正类使用 class_weights
+    if class_weights is not None:
+        weight = torch.ones(C, device=cls_pred.device)
+        weight[1:] = class_weights.to(cls_pred.device)
+    else:
+        weight = None
+
     cls_loss_all = F.cross_entropy(
-        cls_pred.view(-1, cls_pred.size(-1)),
+        cls_pred.view(-1, C),
         conf_t.view(-1),
+        weight=weight,
         reduction="none",
     ).view(B, -1)
 

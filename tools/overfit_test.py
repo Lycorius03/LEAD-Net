@@ -64,7 +64,9 @@ def main():
     model.train()
 
     # ─── 损失 ───
-    criterion = MultiBoxLoss(cfg)
+    num_classes = cfg.get("num_classes", 7)
+    input_size = cfg.get("data", {}).get("input_size", 320)
+    criterion = MultiBoxLoss(num_classes=num_classes + 1, input_size=input_size)
 
     # ─── 优化器 ───
     param_groups = build_llrd_param_groups(model, cfg, freeze_backbone=False)
@@ -156,6 +158,33 @@ def main():
 
     if nan_detected:
         print("\n  [FAIL] NaN detected during overfit test")
+        sys.exit(1)
+
+    # ─── 匹配诊断 ───
+    with torch.no_grad():
+        cls_pred, loc_pred = model(images)
+        default_boxes = model.head.all_default_boxes(device)
+        stats = MultiBoxLoss.diagnose_matching(
+            default_boxes, gt_boxes, gt_labels,
+            input_size=input_size,
+        )
+        scores = torch.softmax(cls_pred, dim=-1)
+        max_conf = scores[:, :, 1:].max().item()
+        mean_conf = scores[:, :, 1:].mean().item()
+
+    print(f"\n--- Matching Diagnostics ---")
+    print(f"  Avg pos anchors/img: {stats['avg_pos_per_img']:.1f}")
+    print(f"  Zero-pos images:     {stats['pct_imgs_zero_pos']:.1f}%")
+    print(f"  Pos p50/p75/max:     {stats['pos_p50']:.0f}/{stats['pos_p75']:.0f}/{stats['pos_max']}")
+    print(f"  Unmatched GT:        {stats['unmatched_gt']}/{stats['total_gt']} ({stats['unmatched_pct']}%)")
+    print(f"  Per-class pos:       {stats['per_class_pos']}")
+    print(f"  Max confidence:      {max_conf:.4f}")
+    print(f"  Mean confidence:     {mean_conf:.4f}")
+
+    if loss_ratio > 0.95:
+        print(f"\n  [WARN] Loss barely decreased (ratio={loss_ratio:.3f})")
+        if stats['pct_imgs_zero_pos'] > 50:
+            print(f"  HINT: >50% images have zero positive anchors — anchor/GT mismatch!")
         sys.exit(1)
     elif loss_ratio > 0.95:
         print(f"\n  [WARN] Loss barely decreased (ratio={loss_ratio:.3f})")

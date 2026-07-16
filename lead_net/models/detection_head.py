@@ -25,11 +25,21 @@ def build_detection_head(cfg: dict, in_channels: list[int] | None = None,
         in_channels = [256, 256, 128]
 
     # 每尺度锚框配置：(scale, aspect_ratios)
-    # M3 调整：stride-16 增加 scale 0.05（16px），提升小目标 (<32px) 匹配率
+    #
+    # 锚框数量：
+    #   stride 16 (20×20): 1+1+3+5 = 10/cell → 4000 anchors
+    #   stride 32 (10×10): 1+5     =  6/cell →  600 anchors
+    #   stride 64 ( 5×5): 5         =  5/cell →  125 anchors
+    #   Total: 4725 anchors
+    #
+    # 设计依据（2026-07-17 数据集诊断）：
+    #   - 73% 目标为小目标 (<32×32px), 最小宽度 P5=2px → 新增 scale 0.03 (≈10px)
+    #   - class 6 (bottle) 仅 8.8% 自然匹配率, 宽高比 P5=0.15 → 新增 AR [3, 1/3]
+    #   - 原配置仅 2,475 anchors, 每图均值 4.2 正样本 → 严重不足
     scale_configs = [
-        ([0.05, 0.1, 0.2],   [[1], [1], [1, 2, 0.5]]),   # stride 16: 小目标 (5 per cell)
-        ([0.3, 0.5],         [[1], [1, 2, 0.5]]),         # stride 32: 中目标 (4 per cell)
-        ([0.7],              [[1, 2, 0.5]]),               # stride 64: 大目标 (3 per cell)
+        ([0.03, 0.05, 0.1, 0.2], [[1], [1], [1, 2, 0.5], [1, 2, 0.5, 3, 1/3]]),   # stride 16: 极小→小目标
+        ([0.3, 0.5],              [[1], [1, 2, 0.5, 3, 1/3]]),                      # stride 32: 中目标+极端AR
+        ([0.7],                   [[1, 2, 0.5, 3, 1/3]]),                            # stride 64: 大目标+极端AR
     ]
 
     return SSDHead(in_channels, num_classes, input_size, fm_sizes, scale_configs)

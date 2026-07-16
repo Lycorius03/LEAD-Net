@@ -1,301 +1,247 @@
 #!/usr/bin/env python
-"""快速 mAP 验证测试 —— 100-200张图片短训练 + mAP评估。
+"""快速 mAP 验证 —— 500 张图, 20 epoch, 每 5 epoch 测 mAP。
 
-目的：
-    验证 mAP 修复是否有效。在 150 张图片上训练 15 epoch，
-    然后运行 COCO mAP 评估，确认 mAP@0.5 > 0。
+目的:
+    在短时间(~30min)内看到 mAP 趋势, 验证修改是否有改善。
+    不跑完整训练, 仅用于快速诊断。
 
 用法:
-    python tools/quick_map_test.py --config configs/train_baseline.yaml --samples 150 --epochs 15
+    python tools/quick_map_test.py --config configs/train_lca.yaml
+    python tools/quick_map_test.py --config configs/train_lca.yaml --baseline
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
 
-import torch
-import torch.nn as nn
-from torch.utils.data import Subset
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from lead_net.utils.config import load_config
-from lead_net.models.lead_net import build_lead_net
+import torch
+import torch.nn as nn
+from torch.utils.data import Subset, DataLoader
+
+from lead_net.utils import load_config, resolve_paths_in
+from lead_net.models import build_lead_net
 from lead_net.models.loss import MultiBoxLoss
-from lead_net.data import build_dataloader
-from lead_net.engine.llrd import build_llrd_param_groups
-from lead_net.engine.scheduler import build_scheduler_from_total_iters
-from lead_net.engine.evaluator import Evaluator
-from lead_net.engine.checkpoint import CheckpointManager
-from lead_net.engine.ema import ModelEMA
+from lead_net.data import build_dataloader, collate_fn
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Quick mAP verification test")
-    p.add_argument("--config", required=True, help="训练配置文件")
-    p.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
-    p.add_argument("--samples", type=int, default=150, help="训练图片数")
-    p.add_argument("--epochs", type=int, default=15, help="训练 epoch 数")
-    p.add_argument("--batch-size", type=int, default=8)
-    p.add_argument("--lr", type=float, default=0.001, help="统一LR")
-    p.add_argument("--eval-samples", type=int, default=50, help="评估图片数")
-    p.add_argument("--score-threshold", type=float, default=0.01,
-                   help="评估置信度阈值（低阈值用于诊断）")
-    p.add_argument("--output", default="outputs/quick_map_test", help="输出目录")
+    p = argparse.ArgumentParser(description="Quick mAP validation smoke test")
+    p.add_argument("--config", required=True, help="配置文件")
+    p.add_argument("--device", default="cuda")
+    p.add_argument("--train-samples", type=int, default=500, help="训练图片数")
+    p.add_argument("--val-samples", type=int, default=200, help="验证图片数")
+    p.add_argument("--epochs", type=int, default=20, help="训练 epoch")
+    p.add_argument("--eval-every", type=int, default=5, help="每 N epoch 测 mAP")
+    p.add_argument("--batch-size", type=int, default=16)
+    p.add_argument("--baseline", action="store_true", help="对比: 用旧锚框+旧IoU阈值")
     return p.parse_args()
 
 
-def limit_dataset(dataset, n: int):
-    """取前 n 个样本。"""
-    return Subset(dataset, list(range(min(n, len(dataset)))))
+def build_quick_loader(cfg, split, n_samples, batch_size, device_type):
+    """构建小样本 dataloader。"""
+    loader = build_dataloader(cfg, split=split, batch_size=batch_size,
+                              num_workers=0, shuffle=(split == "train"))
+    ds = loader.dataset
+    # 随机采样
+    import random
+    indices = random.Random(42).sample(range(len(ds)), min(n_samples, len(ds)))
+
+    subset = Subset(ds, indices)
+    return DataLoader(subset, batch_size=batch_size, shuffle=(split == "train"),
+                      collate_fn=collate_fn, drop_last=(split == "train"))
+
+
+def evaluate_map(model, val_loader, cfg, device):
+    """在验证子集上计算 mAP。"""
+    from lead_net.engine.evaluator import Evaluator
+    model.eval()
+    evaluator = Evaluator(model, val_loader, cfg, device)
+    result = evaluator.evaluate()
+    model.train()
+    return result
 
 
 def main():
     args = parse_args()
     cfg = load_config(args.config)
+    cfg = resolve_paths_in(cfg)
+
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
-    out_dir = Path(args.output)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    print(f"[info] {torch.cuda.get_device_name(device)}")
 
-    print(f"{'='*60}")
-    print(f"  Quick mAP Test")
-    print(f"  Train samples: {args.samples} | Epochs: {args.epochs} | LR: {args.lr}")
-    print(f"  Eval samples: {args.eval_samples} | Score thr: {args.score_threshold}")
-    print(f"  Device: {device}")
-    print(f"{'='*60}")
+    # ── Baseline 模式: 回退旧设置 ──
+    if args.baseline:
+        print("[info] BASELINE MODE: 旧锚框 (2,475) + IoU=0.5 + 无类别权重")
+        # 不修改 cfg, 直接在 loss 创建时覆盖
+        cfg_override = {"overlap_threshold": 0.5, "class_weights": None}
+        # 注意: 锚框无法在运行时覆盖, baseline 用新锚框+旧IoU作为"半对照"
+        print("[warn] 锚框已更新为 4,725, baseline 仅回退 IoU+weights")
+    else:
+        cfg_override = {
+            "overlap_threshold": cfg.get("loss", {}).get("overlap_threshold", 0.35),
+            "class_weights": cfg.get("class_weights", None),
+        }
 
-    # ─── 训练数据（子集） ───
-    full_train_loader = build_dataloader(
-        cfg, split="train", batch_size=args.batch_size,
-        num_workers=0, shuffle=True,
-    )
-    train_dataset = limit_dataset(full_train_loader.dataset, args.samples)
-    # 重新构建 DataLoader（使用 subset）
-    from torch.utils.data import DataLoader
-    from lead_net.data.dataloader import collate_fn
-    train_loader = DataLoader(
-        train_dataset, batch_size=args.batch_size, shuffle=True,
-        num_workers=0, collate_fn=collate_fn, pin_memory=True,
-    )
-
+    # ── 数据 ──
+    train_loader = build_quick_loader(cfg, "train", args.train_samples,
+                                       args.batch_size, device.type)
+    val_loader_full = build_quick_loader(cfg, "val", args.val_samples,
+                                           args.batch_size, device.type)
     steps_per_epoch = len(train_loader)
-    total_iters = args.epochs * steps_per_epoch
-    print(f"  Steps/epoch: {steps_per_epoch} | Total iters: {total_iters}")
 
-    # ─── 验证数据（子集） ───
-    full_val_loader = build_dataloader(
-        cfg, split="val", batch_size=args.batch_size,
-        num_workers=0, shuffle=False,
-    )
-    val_dataset = limit_dataset(full_val_loader.dataset, args.eval_samples)
-    val_loader = DataLoader(
-        val_dataset, batch_size=args.batch_size, shuffle=False,
-        num_workers=0, collate_fn=collate_fn, pin_memory=True,
-    )
+    num_classes = cfg.get("num_classes", 7)
+    input_size = cfg.get("data", {}).get("input_size", 320)
 
-    # ─── 模型 + 损失 ───
-    model = build_lead_net(cfg)
-    model.to(device)
-    model.train()
-    criterion = MultiBoxLoss(cfg)
-
-    # ─── EMA ───
-    ema = ModelEMA(model, decay=0.9998)
-
-    # ─── 优化器 + 调度器 ───
-    param_groups = build_llrd_param_groups(model, cfg, freeze_backbone=False)
-    if args.lr > 0:
-        for g in param_groups:
-            g["lr"] = args.lr
-            g["initial_lr"] = args.lr
-    opt_cfg = cfg.get("optimizer", {})
-    optimizer = torch.optim.SGD(
-        param_groups,
-        momentum=opt_cfg.get("momentum", 0.9),
-        weight_decay=opt_cfg.get("weight_decay", 5e-4),
-        nesterov=opt_cfg.get("nesterov", True),
-    )
-    scheduler = build_scheduler_from_total_iters(
-        optimizer,
-        warmup_iters=min(50, total_iters // 10),
-        total_iters=total_iters,
-        warmup_start_factor=0.05,
-        eta_min_factor=0.0,
-    )
-
-    # ─── AMP ───
-    use_amp = cfg.get("training", {}).get("amp", False) and device.type == "cuda"
-    scaler_init = cfg.get("training", {}).get("grad_scaler_init_scale", 2048.0)
-    scaler = torch.amp.GradScaler("cuda", init_scale=scaler_init) if use_amp else None
-
-    # ─── 训练循环 ───
-    t_start = time.time()
-    history = []
-
-    for epoch in range(args.epochs):
-        epoch_cls = epoch_loc = epoch_loss = 0.0
-        n = 0
-        t_e_start = time.time()
-
+    # 诊断: 训练子集锚框匹配统计
+    print(f"\n--- 训练子集锚框匹配诊断 ---")
+    print(f"  Samples: {args.train_samples}, Batch: {args.batch_size}")
+    total_pos_all = 0
+    total_gt_all = 0
+    per_cls_pos = {}
+    zero_count = 0
+    with torch.no_grad():
+        model_tmp = build_lead_net(cfg)
+        dboxes = model_tmp.head.all_default_boxes(device)
         for batch in train_loader:
-            images = batch["image"].to(device)
-            gt_boxes = batch["boxes"]
-            gt_labels = batch["labels"]
+            stats = MultiBoxLoss.diagnose_matching(
+                dboxes, batch["boxes"], batch["labels"],
+                input_size=input_size,
+                overlap_threshold=cfg_override["overlap_threshold"],
+            )
+            total_pos_all += stats["avg_pos_per_img"] * max(len(batch["boxes"]), 1)
+            total_gt_all += stats["total_gt"]
+            for k, v in stats["per_class_pos"].items():
+                per_cls_pos[k] = per_cls_pos.get(k, 0) + v
+            zero_count += int(stats["pct_imgs_zero_pos"] / 100 * max(len(batch["boxes"]), 1))
+    n_imgs = args.train_samples
+    print(f"  Avg pos/img: {total_pos_all/max(n_imgs,1):.1f}")
+    print(f"  Zero-pos imgs: {zero_count}/{n_imgs} ({zero_count/max(n_imgs,1)*100:.1f}%)")
+    print(f"  Per-class pos: {dict(sorted(per_cls_pos.items()))}")
+
+    # ── 模型 ──
+    model = build_lead_net(cfg).to(device)
+    model.train()
+    n_params = sum(p.numel() for p in model.parameters())
+    n_anchors = model.head.all_default_boxes(device).shape[0]
+    print(f"\n  Model: {n_params:,} params, {n_anchors} anchors")
+
+    # ── 损失 ──
+    criterion = MultiBoxLoss(
+        num_classes=num_classes + 1,
+        input_size=input_size,
+        overlap_threshold=cfg_override["overlap_threshold"],
+        class_weights=cfg_override["class_weights"],
+    )
+
+    # ── 优化器 ──
+    optimizer = torch.optim.SGD(
+        model.parameters(),
+        lr=0.003,
+        momentum=0.9,
+        weight_decay=0.0005,
+    )
+    # 简易 Cosine 调度 (warmup 后 cosine)
+    warmup_iters = 50
+    total_iters = args.epochs * steps_per_epoch
+    scheduler = torch.optim.lr_scheduler.LambdaLR(
+        optimizer,
+        lambda step: (step / max(1, warmup_iters)) * 0.01 + 0.99
+        if step < warmup_iters
+        else 0.5 * (1 + math.cos(math.pi * (step - warmup_iters) / max(1, total_iters - warmup_iters))),
+    )
+
+    # ── 训练 ──
+    gpu_proc = getattr(train_loader, "gpu_processor", None)
+    results = []
+    t_start = time.time()
+
+    for epoch in range(1, args.epochs + 1):
+        model.train()
+        total_cls, total_loc, total_grad, n = 0.0, 0.0, 0.0, 0
+
+        for bi, batch in enumerate(train_loader):
+            if gpu_proc is not None:
+                batch = gpu_proc(batch)
+            images = batch["image"] if gpu_proc is not None else batch["image"].to(device)
 
             optimizer.zero_grad()
-
-            if use_amp:
-                with torch.amp.autocast("cuda"):
-                    cls_pred, loc_pred = model(images)
-                    default_boxes = model.head.all_default_boxes(device)
-                    cls_loss, loc_loss = criterion(cls_pred, loc_pred, default_boxes,
-                                                    gt_boxes, gt_labels)
-                    loss = cls_loss + loc_loss
-                scaler.scale(loss).backward()
-                scaler.unscale_(optimizer)
-                nn.utils.clip_grad_norm_(model.parameters(), 5.0)
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                cls_pred, loc_pred = model(images)
-                default_boxes = model.head.all_default_boxes(device)
-                cls_loss, loc_loss = criterion(cls_pred, loc_pred, default_boxes,
-                                                gt_boxes, gt_labels)
-                loss = cls_loss + loc_loss
-                loss.backward()
-                nn.utils.clip_grad_norm_(model.parameters(), 5.0)
-                optimizer.step()
-
+            cls_pred, loc_pred = model(images)
+            dboxes = model.head.all_default_boxes(device)
+            cl, ll = criterion(cls_pred, loc_pred, dboxes,
+                               batch["boxes"], batch["labels"])
+            loss = cl + ll
+            loss.backward()
+            gnorm = nn.utils.clip_grad_norm_(model.parameters(), 5.0).item()
+            optimizer.step()
             scheduler.step()
-            ema.update()
 
-            if not (torch.isnan(loss) or torch.isinf(loss)):
-                epoch_cls += cls_loss.item()
-                epoch_loc += loc_loss.item()
-                epoch_loss += loss.item()
-                n += 1
+            total_cls += cl.item()
+            total_loc += ll.item()
+            total_grad += gnorm
+            n += 1
 
-        avg_cls = epoch_cls / max(n, 1)
-        avg_loc = epoch_loc / max(n, 1)
-        avg_loss = epoch_loss / max(n, 1)
+        avg_cls = total_cls / n
+        avg_loc = total_loc / n
+        avg_loss = avg_cls + avg_loc
         lr = optimizer.param_groups[0]["lr"]
-        elapsed = time.time() - t_e_start
+        elapsed = time.time() - t_start
 
-        history.append({
-            "epoch": epoch + 1,
-            "cls": round(avg_cls, 4),
-            "loc": round(avg_loc, 4),
-            "loss": round(avg_loss, 4),
-            "lr": lr,
-            "time_s": round(elapsed, 1),
-        })
+        # 进度
+        do_eval = (epoch % args.eval_every == 0 or epoch == args.epochs)
+        map_str = ""
+        map50 = None
+        if do_eval:
+            print(f"  evaluating mAP on {args.val_samples} val images...", end="", flush=True)
+            eval_t0 = time.time()
+            map_result = evaluate_map(model, val_loader_full, cfg, device)
+            map50 = map_result.get("mAP@0.5", 0)
+            map5095 = map_result.get("mAP@0.5:0.95", 0)
+            eval_time = time.time() - eval_t0
+            map_str = f"  mAP@0.5={map50:.4f}  mAP@0.5:0.95={map5095:.4f}  ({eval_time:.0f}s)"
+            results.append({
+                "epoch": epoch, "cls_loss": avg_cls, "loc_loss": avg_loc,
+                "mAP@0.5": map50, "mAP@0.5:0.95": map5095,
+            })
 
-        print(f"  epoch {epoch+1:3d}/{args.epochs}  "
+        print(f"  epoch {epoch:2d}/{args.epochs}  "
               f"cls={avg_cls:.4f}  loc={avg_loc:.4f}  loss={avg_loss:.4f}  "
-              f"lr={lr:.2e}  {elapsed:.0f}s")
+              f"grad={total_grad/n:.2f}  lr={lr:.2e}  {elapsed:.0f}s"
+              f"{'  ' + map_str if map_str else ''}", flush=True)
 
-    train_time = time.time() - t_start
-
-    # ─── mAP 评估 ───
+    # ── 最终报告 ──
     print(f"\n{'='*60}")
-    print(f"  Running mAP evaluation (score_thr={args.score_threshold})...")
+    print(f"  mAP Trend")
+    print(f"{'='*60}")
+    mode = "BASELINE (IoU=0.5, no weights)" if args.baseline else "NEW (IoU=0.35, weights, new anchors)"
+    print(f"  Mode: {mode}")
+    print(f"  {'Epoch':<8} {'cls':<10} {'loc':<10} {'mAP@0.5':<12} {'mAP@0.5:0.95':<14}")
+    print(f"  {'-'*54}")
+    for r in results:
+        print(f"  {r['epoch']:<8} {r['cls_loss']:<10.4f} {r['loc_loss']:<10.4f} "
+              f"{r['mAP@0.5']:<12.4f} {r['mAP@0.5:0.95']:<14.4f}")
 
-    # 使用 EMA 权重评估
-    ema.apply()
-    model.eval()
-
-    # 临时覆盖 eval 配置
-    eval_cfg_backup = cfg.get("eval", {}).copy()
-    cfg.setdefault("eval", {})["score_threshold"] = args.score_threshold
-
-    evaluator = Evaluator(model=model, val_loader=val_loader, cfg=cfg, device=device)
-    metrics = evaluator.evaluate()
-
-    # 恢复配置
-    if eval_cfg_backup:
-        cfg["eval"] = eval_cfg_backup
-
-    ema.restore()
-
-    mAP50 = metrics.get("mAP@0.5", 0.0)
-    mAP50_95 = metrics.get("mAP@0.5:0.95", 0.0)
-    mAP75 = metrics.get("mAP@0.75", 0.0)
-
-    print(f"  mAP@0.5:      {mAP50:.4f}")
-    print(f"  mAP@0.5:0.95: {mAP50_95:.4f}")
-    print(f"  mAP@0.75:     {mAP75:.4f}")
-
-    if metrics.get("per_class"):
-        print(f"  Per-class AP@0.5:")
-        for cls_info in metrics["per_class"]:
-            print(f"    {cls_info['class_name']:15s}: {cls_info['AP@0.5']:.4f}")
-
-    # ─── 判断 ───
-    print(f"\n{'='*60}")
-    print(f"  Results")
-
-    initial_loss = history[0]["loss"]
-    final_loss = history[-1]["loss"]
-    loss_decreased = final_loss < initial_loss * 0.8
-
-    print(f"  Train loss: {initial_loss:.4f} -> {final_loss:.4f}")
-    print(f"  Train time: {train_time:.0f}s ({train_time/60:.1f}min)")
-    print(f"  mAP@0.5: {mAP50:.4f}")
-
-    if not loss_decreased:
-        print("\n  [FAIL] Loss did not decrease sufficiently")
-        verdict = "FAIL"
-    elif mAP50 > 0.001:
-        print(f"\n  [PASS] mAP@0.5 = {mAP50:.4f} > 0.001! Fix working!")
-        verdict = "PASS"
-    elif mAP50 > 0.0:
-        print(f"\n  [MARGINAL] mAP@0.5 = {mAP50:.6f} > 0 but very low. "
-              f"Fix is working, needs more training.")
-        verdict = "MARGINAL"
-    elif mAP50 == 0.0 or mAP50 < 1e-8:
-        print("\n  [INCONCLUSIVE] mAP@0.5 ≈ 0.0")
-        print("  Possible causes:")
-        print("    1. Too few training samples/epochs for meaningful detection")
-        print("    2. Score threshold still too high for early training")
-        print("    3. Further pipeline debugging needed")
-        print("  Try: --score-threshold 0.001 --epochs 30 --samples 500")
-        verdict = "INCONCLUSIVE"
+    final_map = results[-1]["mAP@0.5"] if results else 0.0
+    # 判定
+    if final_map > 0.01:
+        verdict = "GOOD — mAP > 1%, 模型正在学习"
+    elif final_map > 0.001:
+        verdict = "WEAK — mAP < 1% but > 0.1%, 可能需要更多 epoch"
     else:
-        verdict = "UNKNOWN"
+        verdict = "POOR — mAP ≈ 0, 需要进一步诊断"
 
-    # ─── 保存报告 ───
-    report = {
-        "timestamp": datetime.now().isoformat(),
-        "config": args.config,
-        "device": str(device),
-        "train_samples": args.samples,
-        "eval_samples": args.eval_samples,
-        "epochs": args.epochs,
-        "lr": args.lr,
-        "score_threshold": args.score_threshold,
-        "verdict": verdict,
-        "train_time_s": round(train_time, 1),
-        "initial_loss": initial_loss,
-        "final_loss": final_loss,
-        "mAP@0.5": mAP50,
-        "mAP@0.5:0.95": mAP50_95,
-        "mAP@0.75": mAP75,
-        "per_class": metrics.get("per_class", []),
-        "history": history,
-    }
+    print(f"\n  Verdict: {verdict}")
+    print(f"{'='*60}")
 
-    report_path = out_dir / "quick_map_report.json"
-    with open(report_path, "w") as f:
-        json.dump(report, f, indent=2, ensure_ascii=False)
-    print(f"\n  Report saved to: {report_path}")
-
-    sys.exit(0 if verdict == "PASS" else (1 if verdict == "FAIL" else 0))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

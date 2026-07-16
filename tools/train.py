@@ -101,7 +101,14 @@ def main() -> int:
     tag = cfg.get("experiment", {}).get("tag", variant)
     collector = MetricsCollector(output_dir=str(mgr.run_dir), experiment_tag=tag)
     num_cls = cfg.get("num_classes", 80) + 1
-    criterion = MultiBoxLoss(num_classes=num_cls, input_size=cfg.get("data", {}).get("input_size", 320))
+    class_weights = cfg.get("class_weights", None)
+    overlap_threshold = cfg.get("loss", {}).get("overlap_threshold", 0.35)
+    criterion = MultiBoxLoss(
+        num_classes=num_cls,
+        input_size=cfg.get("data", {}).get("input_size", 320),
+        overlap_threshold=overlap_threshold,
+        class_weights=class_weights,
+    )
 
     # 训练
     trainer = Trainer(

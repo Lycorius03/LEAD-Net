@@ -199,7 +199,7 @@ def _build_coco_gt_from_dataset(dataset, cfg: dict) -> Any | None:
         label_path = base_dataset._label_path(img_path)
 
         images.append({
-            "id": i,  # 使用 Subset 内索引，匹配预测中的 image_id
+            "id": idx,  # [FIX] 使用原始索引匹配 batch image_id
             "file_name": img_path.name,
             "width": w,
             "height": h,
@@ -231,7 +231,7 @@ def _build_coco_gt_from_dataset(dataset, cfg: dict) -> Any | None:
 
                 annotations.append({
                     "id": ann_id,
-                    "image_id": i,  # Subset 内索引，匹配 images[].id
+                    "image_id": idx,  # [FIX] 原始索引 内索引，匹配 images[].id
                     "category_id": coco_id,
                     "bbox": [float(x), float(y), float(bw_abs), float(bh_abs)],
                     "area": float(bw_abs * bh_abs),

@@ -91,7 +91,12 @@ def main():
     model = build_lead_net(cfg)
     model.to(device)
     model.train()
-    criterion = MultiBoxLoss(cfg)
+    criterion = MultiBoxLoss(
+        num_classes=cfg.get("num_classes", 7) + 1,
+        input_size=cfg.get("data", {}).get("input_size", 320),
+        overlap_threshold=cfg.get("loss", {}).get("overlap_threshold", 0.35),
+        class_weights=cfg.get("class_weights", None),
+    )
 
     # ─── 优化器 + 调度器 ───
     optimizer = build_optimizer(model, cfg, args.lr)
