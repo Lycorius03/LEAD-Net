@@ -64,6 +64,34 @@ tests/
 .claude/
 memory/
 
+# Session-level planning files
+task_plan.md
+findings.md
+progress.md
+
 # Dataset archives (already extracted)
 *.zip
 *.docx
+
+# Model deployment artifacts
+*.tflite
+*.onnx
+deploy/
+
+# Training checkpoints (large)
+*.pth
+*.pt
+
+# Compiled Python
+*.pyc
+__pycache__/
+
+# MCP / plugin cache
+.claude/
+memory/
+
+# Experiment metrics CSV
+*.csv
+
+# Jupyter notebooks (if any)
+*.ipynb

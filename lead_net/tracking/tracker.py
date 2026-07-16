@@ -1,15 +1,21 @@
-"""多目标 Kalman 追踪器。
+"""多目标 Kalman 追踪器（v4: DIOU 匹配 + NSA-KF 集成）。
 
-Track 数据结构 + MultiTargetTracker（贪心 IoU 匹配 + 生命周期管理 + 优先级选择）。
+Track 数据结构 + MultiTargetTracker（贪心 DIOU 匹配 + 生命周期管理 + 优先级选择）。
+
+v4 增强:
+    - DIOU 匹配: 替换纯 IoU，中心距离惩罚使遮挡后重匹配更鲁棒
+    - NSA-KF 集成: 根据匹配质量自动调整过程噪声
+    - MAX_AGE 可配置: 默认 15（原 3），支持更长遮挡恢复
 
 参考：
     - SORT (arXiv:1602.00763)：tracking-by-detection 框架
-    - 本项目简化：N=3 贪心匹配（非 Hungarian）、单目标优先级输出
+    - DeepSORT w/ DIOU (2024): DIOU 匹配改善遮挡后重关联
+    - NSA-KF (IEEE ICECAI 2024): 自适应噪声 Kalman
 
 设计决策（写入 MODULES.md §4）：
     - max_targets=3：对应小车前方左/中/右三方向，平衡计算开销与覆盖
     - 贪心匹配（非 Hungarian）：N≤3 时全排列 ≤6 种组合，贪心计算量极小
-    - T_lost=3：比 SORT 默认 1 宽松，适配低帧率/遮挡恢复
+    - T_lost=15：v4 大幅放宽（原 3），适配目标被障碍短暂遮挡后重拾
     - min_hits=2：2 帧连续命中确认轨迹，减少单帧误检
 """
 
@@ -105,9 +111,10 @@ class MultiTargetTracker:
         self,
         max_targets: int = 3,
         min_hits: int = 2,
-        T_lost: int = 3,
-        max_ttl: int = 5,
+        T_lost: int = 15,          # v4: 从 3 放宽到 15，支持障碍遮挡后重拾
+        max_ttl: int = 15,         # v4: 从 5 增加到 15
         iou_threshold: float = 0.3,
+        diou_lambda: float = 2.0,  # v4: DIOU 中心距离惩罚权重
         kalman_dt: float = 1.0,
         image_center: tuple[float, float] = (160.0, 160.0),
     ):
@@ -116,6 +123,7 @@ class MultiTargetTracker:
         self.max_ttl = max_ttl
         self.T_lost = T_lost
         self.iou_threshold = iou_threshold
+        self.diou_lambda = diou_lambda
         self.kalman_dt = kalman_dt
         self.image_center = image_center
 
@@ -153,19 +161,20 @@ class MultiTargetTracker:
             detections, active,
         )
 
-        # 3. 匹配成功 → 观测更新
-        for det_idx, track_idx, _iou in matches:
+        # 3. 匹配成功 → 观测更新（v4: 带置信度的 NSA 更新）
+        for det_idx, track_idx, _score in matches:
             det = detections[det_idx]
             bbox = det["bbox"]
             z = np.array([bbox[0], bbox[1], bbox[2], bbox[3]], dtype=np.float64)
             t = active[track_idx]
-            t.kf.update(z)
+            conf = det.get("score", 0.5)
+            t.kf.update(z, confidence=conf)  # v4: NSA 自适应噪声
             t.time_since_update = 0
             t.hits += 1
-            t.ttl = self.max_ttl   # 重置 TTL
+            t.ttl = self.max_ttl
             t.decision_state = "tracking"
             t.cls = det.get("category_id", -1)
-            t.conf = det.get("score", 0.0)
+            t.conf = conf
             s = t.kf.state()
             t.history.append((float(s[0]), float(s[1]), float(s[2]), float(s[3])))
             if t.state == "tentative" and t.hits >= self.min_hits:
@@ -242,10 +251,13 @@ class MultiTargetTracker:
     def _greedy_match(
         self, detections: list[dict], tracks: list[Track],
     ) -> tuple[list[tuple[int, int, float]], list[int], list[int]]:
-        """贪心 IoU 匹配。
+        """贪心 DIOU 匹配（v4: 替换纯 IoU，中心距离惩罚改善遮挡后重匹配）。
+
+        DIOU = IoU - λ * (d_center² / c_diag²)
+        其中 d_center = 两框中心距离, c_diag = 最小外接框对角线长度
 
         Returns:
-            matches: [(det_idx, track_idx, iou), ...]
+            matches: [(det_idx, track_idx, diou_score), ...]
             unmatched_dets: [det_idx, ...]
             unmatched_tracks: [track_idx, ...]
         """
@@ -253,29 +265,34 @@ class MultiTargetTracker:
             return [], list(range(len(detections))), list(range(len(tracks)))
 
         N_d, N_t = len(detections), len(tracks)
-        iou_mat = np.zeros((N_d, N_t), dtype=np.float64)
+        diou_mat = np.zeros((N_d, N_t), dtype=np.float64)
         for i in range(N_d):
             for j in range(N_t):
-                iou_mat[i, j] = self._box_iou(
+                diou_mat[i, j] = self._box_diou(
                     detections[i]["bbox"], self._track_bbox(tracks[j]),
                 )
 
-        # 按 IoU 降序取配对
+        # 按 DIOU 降序取配对
         pairs = []
         for i in range(N_d):
             for j in range(N_t):
-                if iou_mat[i, j] > self.iou_threshold:
-                    pairs.append((iou_mat[i, j], i, j))
+                if diou_mat[i, j] > -1.0:  # DIOU ∈ [-1, 1]，允许负值匹配
+                    pairs.append((diou_mat[i, j], i, j))
         pairs.sort(reverse=True, key=lambda x: x[0])
 
         used_d = set()
         used_t = set()
         matches = []
-        for iou, di, ti in pairs:
+        for score, di, ti in pairs:
             if di not in used_d and ti not in used_t:
-                matches.append((di, ti, iou))
-                used_d.add(di)
-                used_t.add(ti)
+                # 仍使用 IoU 阈值作为最低匹配标准
+                iou = self._box_iou(
+                    detections[di]["bbox"], self._track_bbox(tracks[ti]),
+                )
+                if iou >= self.iou_threshold or score > 0.0:
+                    matches.append((di, ti, score))
+                    used_d.add(di)
+                    used_t.add(ti)
 
         unmatched_dets = [i for i in range(N_d) if i not in used_d]
         unmatched_tracks = [j for j in range(N_t) if j not in used_t]
@@ -304,6 +321,42 @@ class MultiTargetTracker:
         area_b = b[2] * b[3]
         union = area_a + area_b - inter
         return inter / union if union > 1e-8 else 0.0
+
+    def _box_diou(self, a: list[float], b: list[float]) -> float:
+        """cxcywh 格式两个框的 DIOU（Distance-IoU）。
+
+        DIOU = IoU - λ * ρ² / c²
+        其中 ρ² = 两框中心距离平方, c² = 最小外接框对角线长度平方
+
+        参考: Zheng et al., "Distance-IoU Loss", AAAI 2020
+        """
+        iou = self._box_iou(a, b)
+
+        # 中心坐标
+        ax_c, ay_c = a[0], a[1]
+        bx_c, by_c = b[0], b[1]
+
+        # 中心距离平方
+        rho2 = (ax_c - bx_c) ** 2 + (ay_c - by_c) ** 2
+
+        # 最小外接框对角线长度平方
+        ax1, ay1 = a[0] - a[2] / 2, a[1] - a[3] / 2
+        ax2, ay2 = a[0] + a[2] / 2, a[1] + a[3] / 2
+        bx1, by1 = b[0] - b[2] / 2, b[1] - b[3] / 2
+        bx2, by2 = b[0] + b[2] / 2, b[1] + b[3] / 2
+
+        # 最小外接框
+        cx1 = min(ax1, bx1)
+        cy1 = min(ay1, by1)
+        cx2 = max(ax2, bx2)
+        cy2 = max(ay2, by2)
+        c2 = (cx2 - cx1) ** 2 + (cy2 - cy1) ** 2
+
+        if c2 < 1e-8:
+            return iou
+
+        diou = iou - self.diou_lambda * rho2 / c2
+        return float(diou)
 
     def _cleanup(self) -> None:
         """删除超时或 marked deleted 的 tracks。

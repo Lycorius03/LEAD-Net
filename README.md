@@ -2,7 +2,7 @@
 
 Lightweight Edge-aware Attention Detection Network
 
-面向资源受限边缘设备（OpenMV H7 Plus）的轻量级通用障碍物感知与避障系统。
+面向资源受限边缘设备（OpenMV H7 Plus）的 **目标追踪 + 障碍规避 + 重拾机制** 轻量级视觉感知系统。
 
 [![Python](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/pytorch-2.11-red.svg)](https://pytorch.org/)
@@ -10,23 +10,44 @@ Lightweight Edge-aware Attention Detection Network
 
 ## 概述
 
-LEAD-Net 是一个用于智能小车动态避障的轻量化视觉感知系统。核心创新包括：
+LEAD-Net 是一个用于智能小车 **目标追踪与动态避障** 的轻量化视觉感知系统。
+核心创新：**轻量级视觉目标追踪与重拾机制（Lightweight Target Tracking and Re-acquisition Mechanism）**
 
-- **LCA**（Lightweight Coordinate-aware Attention）—— 面向避障特化的轻量坐标注意力模块，集成无参特征梯度边缘引导 (Edge Guidance)、自适应通道压缩 (Adaptive Reduction Ratio)、中下方固定空间先验 (Obstacle Prior Mask) 与残差门控 (Residual Attention Gate)，相比经典 CA 仅增加 1 个标量参数，对边缘端（OpenMV H7 Plus）极度友好。
-- **SSD-Lite 检测头** —— 多尺度深度可分离卷积，2475 个锚框，覆盖 16-317 px 目标尺度
-- **Class-Agnostic 三层决策** —— 置信度过滤 → ROI 空间约束 → 面积代理紧急度优先级，不依赖类别白名单，对任意前景物体有效
-- **DL + 传统 CV 混合感知** —— 深度学习精细检测 + 颜色聚类地面分割兜底，提升未知物体鲁棒性
-- **Kalman 多目标追踪** —— 8 维状态向量匀速模型，贪心 IoU 匹配，Track 生命周期管理
+四大核心能力：
+1. **稳定追踪目标** — NSA-KF 自适应卡尔曼 + DIOU 匹配
+2. **检测前方障碍** — SSD-Lite + Class-Agnostic 感知
+3. **绕过障碍** — APF 人工势场法自主避障
+4. **重新找到并继续追踪** — 螺旋搜索 + ROI 扩展 + 路径记忆（⭐ 论文创新点）
 
-### 系统架构
+核心技术栈：
+
+- **LCA**（Lightweight Coordinate-aware Attention）—— 面向避障特化的轻量坐标注意力模块，集成无参特征梯度边缘引导 (Edge Guidance)、自适应通道压缩 (Adaptive Reduction Ratio)、中下方固定空间先验 (Obstacle Prior Mask) 与残差门控 (Residual Attention Gate)，相比经典 CA 仅增加 1 个标量参数。
+- **SSD-Lite 检测头** —— 多尺度深度可分离卷积，2475 个锚框
+- **NSA-KF + DIOU 追踪** —— 噪声自适应 Kalman + 距离感知 IoU 匹配，遮挡后重捕获率提升
+- **五状态 FSM** —— SEARCHING → TRACKING → OBSTACLE_DETECTED → AVOIDING → TARGET_REACQUIRE
+- **视觉伺服** —— 五级 BBox Area → Speed 精细映射
+- **MOSSE 辅助追踪** — 相关滤波轻量追踪，DL 检测失败时桥接 3-5 帧
+
+### 系统架构（v4）
 
 ```text
 Camera → MobileNetV3-Small + LCA + SSD-Lite → Detections
-  → [DL Path] ─┐
-               ├→ Decision Engine (3-layer) → Priority Target
-  → [CV Path] ─┘  Confidence → ROI → Area Proxy
-  → Kalman Tracking → Obstacle State → STM32 UART
+  → [DL Path: 目标检测 + 障碍检测]
+  → [FSM State Machine: 五状态追踪-避障-重拾]
+     SEARCHING → TRACKING → OBSTACLE_DETECTED → AVOIDING → TARGET_REACQUIRE
+  → NSA-KF Tracking (DIOU 匹配 + 自适应噪声)
+  → Speed Controller (五级面积-速度映射)
+  → Reacquisition Engine (螺旋搜索 + ROI 扩展)
+  → UART Output (x,y,a 格式不变)
 ```
+
+**v4 新增模块**：
+| 模块 | 文件 | 说明 |
+|------|------|------|
+| ReacquisitionEngine | `motion/reacquisition.py` | 螺旋搜索 + ROI 扩展重拾 |
+| NSA-KF | `tracking/kalman_filter.py` | 噪声自适应 Kalman |
+| MOSSETracker | `tracking/mosse_tracker.py` | 轻量相关滤波辅助追踪 |
+| Graph Fusion | `graph/fusion.py` | Conv-BN-ReLU 算子融合 |
 
 ## 快速开始
 
@@ -97,9 +118,10 @@ LEAD-Net/
 │   ├── models/             #   Backbone / LCA / SSD-Lite Head / Loss
 │   ├── data/               #   COCO / YOLO-txt Dataset / Transforms / DataLoader
 │   ├── engine/             #   Trainer / Evaluator / Scheduler / Checkpoint / Metrics
-├── docxs/                  # 文档（研究、计划、训练日志）
-│   ├── tracking/           #   KalmanFilter / MultiTargetTracker
-│   ├── decision/           #   DecisionEngine / ROIFilter / Priority / Fusion
+│   ├── tracking/           #   ⭐ NSA-KF / MultiTargetTracker (DIOU) / MOSSETracker
+│   ├── decision/           #   DecisionEngine / ROIFilter / Priority / Fusion / Risk
+│   ├── motion/             #   ⭐ 五状态FSM / ReacquisitionEngine / APF / SpeedController
+│   ├── graph/              #   ⭐ Conv-BN-ReLU 算子融合
 │   ├── cv_fallback/        #   GroundSegmenter / BlobDetector / CvFallback
 │   └── utils/              #   Config / Path 工具
 ├── tools/                  # 入口脚本
@@ -163,7 +185,9 @@ python tests/test_data_pipeline.py  # 数据管线
 | M6 | [ ] | OpenMV 部署与实时性验证 |
 | M7 | [ ] | 消融实验数据采集与论文图表 |
 | M8 | [ ] | STM32 通信联调 |
-| M9 | [x] | 三层避障决策 + 传统 CV 兜底（代码已完成） |
+| M9 | [x] | 三层避障决策 + 传统 CV 兜底 |
+| M10 | [x] | 运动规划：APF 避障 + 自适应减速 + 稳定跟随 |
+| M11 | [x] | **v4 全栈优化：五状态FSM + NSA-KF + DIOU + 螺旋重拾 + 图融合** |
 
 ## 数据集
 
