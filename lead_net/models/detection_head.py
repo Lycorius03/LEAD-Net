@@ -218,8 +218,22 @@ class SSDHead(nn.Module):
             dets: list[dict] = []
             for idx in keep:
                 x1, y1, x2, y2 = decoded[idx].tolist()
+                # 归一化 [0,1] → 像素坐标（input_size 空间）
+                # COCO eval 期望绝对像素坐标，非归一化值
+                s = self.input_size
+                bx = x1 * s
+                by = y1 * s
+                bw = (x2 - x1) * s
+                bh = (y2 - y1) * s
+                # 裁剪到有效范围
+                bx = max(0.0, bx)
+                by = max(0.0, by)
+                bw = min(bw, s - bx)
+                bh = min(bh, s - by)
+                if bw <= 1.0 or bh <= 1.0:
+                    continue
                 dets.append({
-                    "bbox": [x1, y1, x2 - x1, y2 - y1],
+                    "bbox": [bx, by, bw, bh],
                     "score": float(kept_scores[idx].item()),
                     "category_id": int(cls_ids[idx].item()) - 1,  # 内部 id (0-based)
                 })

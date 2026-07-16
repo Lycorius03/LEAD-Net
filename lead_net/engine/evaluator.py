@@ -56,6 +56,8 @@ class Evaluator:
         internal_to_coco = {v: k for k, v in coco_id_to_internal.items()}
 
         predictions = []
+        total_dets = 0
+        score_sum = 0.0
         n_batches = len(self.val_loader)
         for bi, batch in enumerate(self.val_loader):
             images = batch["image"].to(self.device)
@@ -84,6 +86,15 @@ class Evaluator:
                         "bbox": [float(x) for x in det["bbox"]],
                         "score": float(det["score"]),
                     })
+                    total_dets += 1
+                    score_sum += float(det["score"])
+
+        # 诊断输出
+        avg_score = score_sum / max(total_dets, 1)
+        n_imgs = len(self.val_loader.dataset)
+        print(f"[eval] 预测统计: {total_dets} detections / {n_imgs} images "
+              f"({total_dets/max(n_imgs,1):.1f} per img), "
+              f"avg_score={avg_score:.4f}, score_thr={score_threshold}", flush=True)
 
         if not predictions:
             print("[eval] 无预测结果，可能所有置信度低于阈值")
@@ -159,25 +170,36 @@ def _build_coco_gt_from_dataset(dataset, cfg: dict) -> Any | None:
     coco_id_to_internal = cfg.get("coco_id_to_internal", {})
     class_map = cfg.get("class_map", {})
     num_classes = cfg.get("num_classes", 7)
+    input_size = cfg.get("data", {}).get("input_size", 320)
+
+    # GT 图像尺寸统一为 input_size × input_size。
+    # 原因：所有图像在进入模型前被 Resize 到 input_size，模型输出
+    # 的 bbox 坐标也在 input_size 空间内。GT 必须使用相同空间才能
+    # 与预测框正确计算 IoU。
+    w = h = input_size
 
     images = []
     annotations = []
     ann_id = 0
 
-    for idx in range(len(dataset)):
-        img_path = dataset._image_paths[idx]
-        label_path = dataset._label_path(img_path)
+    # 处理 Subset 包装：底层 TXDetection 才有 _image_paths
+    if hasattr(dataset, "_image_paths"):
+        base_dataset = dataset
+        indices = list(range(len(dataset)))
+    elif hasattr(dataset, "dataset") and hasattr(dataset, "indices"):
+        # torch.utils.data.Subset
+        base_dataset = dataset.dataset
+        indices = dataset.indices
+    else:
+        print("[eval] 无法访问数据集图片信息，跳过 COCO GT 构建")
+        return None
 
-        # 获取图片尺寸
-        from PIL import Image
-        try:
-            img = Image.open(img_path)
-            w, h = img.size
-        except Exception:
-            w, h = 320, 320
+    for i, idx in enumerate(indices):
+        img_path = base_dataset._image_paths[idx]
+        label_path = base_dataset._label_path(img_path)
 
         images.append({
-            "id": idx,
+            "id": i,  # 使用 Subset 内索引，匹配预测中的 image_id
             "file_name": img_path.name,
             "width": w,
             "height": h,
@@ -185,7 +207,7 @@ def _build_coco_gt_from_dataset(dataset, cfg: dict) -> Any | None:
 
         # 解析标注
         if label_path.is_file():
-            boxes, labels = dataset._parse_labels(label_path)
+            boxes, labels = base_dataset._parse_labels(label_path)
             for box, label in zip(boxes, labels):
                 # box: [cx, cy, w, h] normalized
                 cx, cy, bw, bh = box.tolist()
@@ -209,7 +231,7 @@ def _build_coco_gt_from_dataset(dataset, cfg: dict) -> Any | None:
 
                 annotations.append({
                     "id": ann_id,
-                    "image_id": idx,
+                    "image_id": i,  # Subset 内索引，匹配 images[].id
                     "category_id": coco_id,
                     "bbox": [float(x), float(y), float(bw_abs), float(bh_abs)],
                     "area": float(bw_abs * bh_abs),

@@ -238,7 +238,7 @@ def main():
         "timestamp": datetime.now().isoformat(),
         "config": args.config,
         "device": str(device),
-        "samples": n_samples,
+        "samples": args.samples,
         "epochs": args.epochs,
         "lr": args.lr,
         "verdict": verdict,
