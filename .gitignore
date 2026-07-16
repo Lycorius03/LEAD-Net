@@ -26,6 +26,9 @@ hub/
 
 # Training outputs / experiment artifacts
 outputs/
+
+# Research & planning documents (internal, not for public repo)
+docxs/
 runs/
 wandb/
 experiments/
