@@ -23,7 +23,8 @@ training:
   amp: true
   ema: true
   ema_decay: 0.9998
-  grad_clip_norm: 10.0
+  grad_clip_norm: 5.0           # [CHANGED] 10.0→5.0
+  grad_scaler_init_scale: 2048.0 # [NEW]
   batch_size: 64
   num_workers: 16
   prefetch_factor: 8
@@ -39,11 +40,11 @@ stage2_joint_training:
   patience: 0
 
 learning_rate:
-  head: 0.001
-  lca: 0.0008
-  backbone_last: 0.0003
-  backbone_middle: 0.0001
-  backbone_first: 0.00003
+  head: 0.003            # [CHANGED] LR Range Test: min_loss/10
+  lca: 0.0024
+  backbone_last: 0.0009
+  backbone_middle: 0.0003
+  backbone_first: 0.00009
 
 optimizer:
   name: sgd
@@ -55,8 +56,8 @@ optimizer:
 
 lr_scheduler:
   name: cosine
-  warmup_iters: 1000
-  warmup_start_factor: 0.001
+  warmup_iters: 500
+  warmup_start_factor: 0.01
 
 checkpoint:
   save_best_map: true

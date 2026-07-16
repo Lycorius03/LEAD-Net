@@ -79,7 +79,8 @@ training:
   amp: true
   ema: true
   ema_decay: 0.9998
-  grad_clip_norm: 10.0
+  grad_clip_norm: 5.0           # [CHANGED] 10.0→5.0, 配合 AMP unscale
+  grad_scaler_init_scale: 2048.0 # [NEW] 降低 AMP 溢出风险 (default 65536)
   batch_size: 64
   num_workers: 16
   prefetch_factor: 8
@@ -95,11 +96,11 @@ stage2_joint_training:
   patience: 15
 
 learning_rate:
-  head: 0.001
-  lca: 0.0008
-  backbone_last: 0.0003
-  backbone_middle: 0.0001
-  backbone_first: 0.00003
+  head: 0.003            # [CHANGED] 0.001→0.003 (LR Range Test: min_loss/10)
+  lca: 0.0024            # [CHANGED] 0.0008→0.0024
+  backbone_last: 0.0009  # [CHANGED] 0.0003→0.0009
+  backbone_middle: 0.0003 # [CHANGED] 0.0001→0.0003
+  backbone_first: 0.00009 # [CHANGED] 0.00003→0.00009
 
 optimizer:
   name: sgd
@@ -111,8 +112,8 @@ optimizer:
 
 lr_scheduler:
   name: cosine
-  warmup_iters: 1000            # 负值表示百分比（如 -0.1 = 10% 总步数）
-  warmup_start_factor: 0.001    # warmup 起始 LR = base_lr * factor
+  warmup_iters: 500             # [CHANGED] 1000→500 (约 2.5 epoch @212 batch)
+  warmup_start_factor: 0.01     # [CHANGED] 0.001→0.01 (10x 提速 warmup)
   eta_min_factor: 0.0           # cosine 结束 LR = base_lr * factor（0.0 为降到零）
 
 checkpoint:

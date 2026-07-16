@@ -71,7 +71,8 @@ class Trainer:
         self._use_ema = train_cfg.get("ema", False)
         self._ema_decay = train_cfg.get("ema_decay", 0.9998)
         self._grad_clip = train_cfg.get("grad_clip_norm", 10.0)
-        self._scaler = torch.amp.GradScaler("cuda") if (self._use_amp and self.device.type == "cuda") else None
+        _scaler_init = train_cfg.get("grad_scaler_init_scale", 2048.0)
+        self._scaler = torch.amp.GradScaler("cuda", init_scale=_scaler_init) if (self._use_amp and self.device.type == "cuda") else None
 
         # EMA
         self._ema: ModelEMA | None = None
@@ -298,6 +299,8 @@ class Trainer:
             gt_boxes, gt_labels = batch["boxes"], batch["labels"]
 
             # Forward + loss
+            self._optimizer.zero_grad()
+
             if self._scaler:
                 with torch.amp.autocast("cuda"):
                     cls_pred, loc_pred = self.model(images)
@@ -305,15 +308,16 @@ class Trainer:
                     cls_loss, loc_loss = self.criterion(cls_pred, loc_pred, default_boxes, gt_boxes, gt_labels)
                     loss = cls_loss + loc_loss
                 self._scaler.scale(loss).backward()
+                # [FIX] unscale before gradient clipping (AMP 最佳实践)
+                self._scaler.unscale_(self._optimizer)
             else:
                 cls_pred, loc_pred = self.model(images)
                 default_boxes = self.model.head.all_default_boxes(self.device)
                 cls_loss, loc_loss = self.criterion(cls_pred, loc_pred, default_boxes, gt_boxes, gt_labels)
                 loss = cls_loss + loc_loss
-                self._optimizer.zero_grad()
                 loss.backward()
 
-            # 梯度裁剪
+            # 梯度裁剪（AMP: 已在 unscale 后，梯度为真实值）
             total_norm = nn.utils.clip_grad_norm_(self.model.parameters(), self._grad_clip).item()
 
             # 优化器步进
@@ -322,9 +326,9 @@ class Trainer:
                 self._scaler.update()
             else:
                 self._optimizer.step()
-                self._optimizer.zero_grad()
 
-            # [FIX]：调度器按 iteration 步进            if self._scheduler is not None:
+            # 调度器按 iteration 步进
+            if self._scheduler is not None:
                 self._scheduler.step()
 
             # EMA 更新

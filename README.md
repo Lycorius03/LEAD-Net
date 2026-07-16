@@ -86,19 +86,28 @@ python tools/train.py --config configs/train_lca.yaml --resume
 python tools/train.py --config configs/train_lca.yaml --smoke --device cpu
 ```
 
-**训练策略（v3 更新）：**
+**训练策略（v3 更新 + Phase A 稳定化修复）：**
 
 - **两阶段**：冻结 Backbone → LLRD 联合训练
 - **调度器**：Linear Warmup + Cosine Annealing（按 iteration 步进）
 - **定期保存**：每 epoch 保存 latest.pt + best.pt + 10 epoch 快照
 - **完整恢复**：latest.pt 含 model + optimizer + scheduler 状态
-- **数值稳定**：改进的 loss 归一化 + NaN 安全检查
+- **数值稳定**：AMP zero_grad 修复 + GradScaler unscale + log epsilon 保护
 - **显存自适应**：batch_size=auto 自动探测最优值
+- **NaN 检测**：Fairseq NanDetector（逐层 hook）+ grad_stats 快速诊断
+- **LR Range Test**：Leslie Smith 方法自动确定最优初始学习率
 
-### 评估
+### 快速验证
 
 ```bash
-python tools/eval.py --config configs/train_baseline.yaml --weights outputs/checkpoints/baseline_no_lca.pth
+# Overfit 测试（4 张图 × 50 iter，验证模型能学习）
+python tools/overfit_test.py --config configs/train_lca.yaml
+
+# 短测试（100-200 张图 × 10-15 epoch，验证无 NaN + loss 趋势）
+python tools/short_test.py --config configs/train_lca.yaml --samples 150 --epochs 15
+
+# LR Range Test（自动搜索最优学习率）
+python tools/lr_range_test.py --config configs/train_lca.yaml --steps 500
 ```
 
 ### 锚框分析

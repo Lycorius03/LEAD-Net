@@ -44,16 +44,19 @@ def build_scheduler(
         LRScheduler：按 iteration 步进，自动处理 warmup → cosine 过渡。
     """
     sched_cfg: dict = cfg.get("lr_scheduler", {})
-    warmup_iters: int = int(sched_cfg.get("warmup_iters", 1000))
-    warmup_start_factor: float = float(sched_cfg.get("warmup_start_factor", 0.001))
+    warmup_iters: int = int(sched_cfg.get("warmup_iters", 500))
+    warmup_start_factor: float = float(sched_cfg.get("warmup_start_factor", 0.01))
+    total_iters = total_epochs * steps_per_epoch
 
-    # 若 warmup_iters 用负数表示百分比（如 -0.1 = 10%），则从总步数计算
-    if warmup_iters < 0:
-        total_iters = total_epochs * steps_per_epoch
+    # 支持 warmup_ratio（如 0.05 = 5% 总步数），优先级高于 warmup_iters
+    warmup_ratio: float | None = sched_cfg.get("warmup_ratio", None)
+    if warmup_ratio is not None:
+        warmup_iters = max(1, int(warmup_ratio * total_iters))
+    elif warmup_iters < 0:
+        # 负数表示百分比（如 -0.1 = 10%）
         warmup_iters = int(abs(warmup_iters) * total_iters)
 
-    # 确保 warmup 不超过总步数
-    total_iters = total_epochs * steps_per_epoch
+    # 确保 warmup 不超过总步数的 50%
     warmup_iters = min(warmup_iters, max(1, total_iters // 2))
 
     # Cosine 阶段步数

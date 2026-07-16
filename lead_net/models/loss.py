@@ -164,8 +164,9 @@ def _encode(default_boxes: torch.Tensor, matched_gt: torch.Tensor,
 
     loc_cx = (g_cx - d_cx) / (d_w * variance[0])
     loc_cy = (g_cy - d_cy) / (d_h * variance[0])
-    loc_w = torch.log(g_w / d_w) / variance[1]
-    loc_h = torch.log(g_h / d_h) / variance[1]
+    eps = 1e-6
+    loc_w = torch.log((g_w + eps) / (d_w + eps)) / variance[1]
+    loc_h = torch.log((g_h + eps) / (d_h + eps)) / variance[1]
 
     return torch.stack([loc_cx, loc_cy, loc_w, loc_h], dim=-1)
 
