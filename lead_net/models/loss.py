@@ -106,9 +106,19 @@ class MultiBoxLoss(nn.Module):
             cls_pred, conf_t, pos, num_pos, self.neg_pos_ratio
         )
 
-        # Normalize by num_pos
-        total_pos = num_pos.sum().float().clamp(min=1)
-        return cls_loss / total_pos, loc_loss / total_pos
+        # Normalize by num_pos（数值稳定性：min=10 防止单样本梯度爆炸）
+        # 参考：SSD 论文 + YOLO 社区实践，过小的分母导致 loss 量级异常
+        total_pos = num_pos.sum().float().clamp(min=10)
+        cls = cls_loss / total_pos
+        loc = loc_loss / total_pos
+
+        # NaN/Inf 安全检查（训练初期可能因标注问题触发）
+        if torch.isnan(cls) or torch.isinf(cls):
+            cls = torch.tensor(0.0, device=device, requires_grad=True)
+        if torch.isnan(loc) or torch.isinf(loc):
+            loc = torch.tensor(0.0, device=device, requires_grad=True)
+
+        return cls, loc
 
 
 def _match(default_boxes: torch.Tensor, gt_boxes: torch.Tensor,

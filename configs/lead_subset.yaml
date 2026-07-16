@@ -111,8 +111,9 @@ optimizer:
 
 lr_scheduler:
   name: cosine
-  warmup_iters: 1000
-  warmup_start_factor: 0.001
+  warmup_iters: 1000            # 负值表示百分比（如 -0.1 = 10% 总步数）
+  warmup_start_factor: 0.001    # warmup 起始 LR = base_lr * factor
+  eta_min_factor: 0.0           # cosine 结束 LR = base_lr * factor（0.0 为降到零）
 
 checkpoint:
   save_best_map: true

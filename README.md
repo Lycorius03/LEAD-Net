@@ -47,12 +47,30 @@ python tools/prepare_lead_dataset.py
 ### 训练
 
 ```bash
+# 冒烟测试（2 张图 1 epoch，验证管线）
+python tools/train.py --config configs/train_lca.yaml --smoke
+
 # Baseline（无 LCA）
 python tools/train.py --config configs/train_baseline.yaml
 
 # +LCA 消融对照
 python tools/train.py --config configs/train_lca.yaml
+
+# 从 checkpoint 恢复训练
+python tools/train.py --config configs/train_lca.yaml --resume
+
+# CPU 调试模式
+python tools/train.py --config configs/train_lca.yaml --smoke --device cpu
 ```
+
+**训练策略（v3 更新）：**
+
+- **两阶段**：冻结 Backbone → LLRD 联合训练
+- **调度器**：Linear Warmup + Cosine Annealing（按 iteration 步进）
+- **定期保存**：每 epoch 保存 latest.pt + best.pt + 10 epoch 快照
+- **完整恢复**：latest.pt 含 model + optimizer + scheduler 状态
+- **数值稳定**：改进的 loss 归一化 + NaN 安全检查
+- **显存自适应**：batch_size=auto 自动探测最优值
 
 ### 评估
 
@@ -78,7 +96,8 @@ LEAD-Net/
 ├── lead_net/               # 源码包
 │   ├── models/             #   Backbone / LCA / SSD-Lite Head / Loss
 │   ├── data/               #   COCO / YOLO-txt Dataset / Transforms / DataLoader
-│   ├── engine/             #   Trainer / Evaluator / MetricsCollector
+│   ├── engine/             #   Trainer / Evaluator / Scheduler / Checkpoint / Metrics
+├── docxs/                  # 文档（研究、计划、训练日志）
 │   ├── tracking/           #   KalmanFilter / MultiTargetTracker
 │   ├── decision/           #   DecisionEngine / ROIFilter / Priority / Fusion
 │   ├── cv_fallback/        #   GroundSegmenter / BlobDetector / CvFallback
@@ -89,7 +108,7 @@ LEAD-Net/
 │   ├── inspect_anchors.py  #   锚框分析工具
 │   ├── prepare_lead_dataset.py # COCO 7类子集 + KITTI 格式转换
 │   └── download_coco.py    #   COCO 数据集下载
-├── tests/                  # 单元测试（7 文件，55+ 项）
+├── tests/                  # 单元测试（9 文件，60+ 项）
 ├── deploy/                 # OpenMV 部署（M6）
 └── requirements.txt        # Python 依赖
 ```
@@ -136,15 +155,15 @@ python tests/test_data_pipeline.py  # 数据管线
 
 | 阶段 | 状态 | 内容 |
 | ------ | ------ | ------ |
-| M1 | ✅ | Baseline（MobileNetV3-Small + SSD-Lite）全流程跑通 |
-| M2 | ✅ | LCA 注意力模块设计与集成 |
-| M3 | ✅ | Detection Head 锚框核查与尺度调整 |
-| M4 | ✅ | Kalman 多目标追踪 + 指标采集系统 |
-| M5 | ⬜ | 云端全量训练 + INT8 量化 + TFLite 转换 |
-| M6 | ⬜ | OpenMV 部署与实时性验证 |
-| M7 | ⬜ | 消融实验数据采集与论文图表 |
-| M8 | ⬜ | STM32 通信联调 |
-| M9 | ✅ | 三层避障决策 + 传统 CV 兜底（代码已完成） |
+| M1 | [x] | Baseline（MobileNetV3-Small + SSD-Lite）全流程跑通 |
+| M2 | [x] | LCA 注意力模块设计与集成 |
+| M3 | [x] | Detection Head 锚框核查与尺度调整 |
+| M4 | [x] | Kalman 多目标追踪 + 指标采集系统 |
+| M5 | [ ] | 云端全量训练 + INT8 量化 + TFLite 转换 |
+| M6 | [ ] | OpenMV 部署与实时性验证 |
+| M7 | [ ] | 消融实验数据采集与论文图表 |
+| M8 | [ ] | STM32 通信联调 |
+| M9 | [x] | 三层避障决策 + 传统 CV 兜底（代码已完成） |
 
 ## 数据集
 

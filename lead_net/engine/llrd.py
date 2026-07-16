@@ -1,4 +1,4 @@
-"""LLRD（Layer-wise Learning Rate Decay）—— 五级分层学习率。
+"""LLRD（Layer-wise Learning Rate Decay）—— 五级分层学习率 + 阶段过渡。
 
 五级划分：
     Head (SSD-Lite)     → 1.0e-3
@@ -9,6 +9,10 @@
 
 每个 LR 组自动拆分为 weight_decay / no_weight_decay 两组，
 BN 和 bias 参数不参与 weight decay。
+
+阶段过渡：
+    Stage 1 → Stage 2: unfreeze_backbone() 恢复 requires_grad，
+    然后重新调用 build_llrd_param_groups(freeze_backbone=False) 重建优化器。
 """
 
 from __future__ import annotations
@@ -24,9 +28,35 @@ _DEFAULT_LR_CONFIG = {
     "backbone_first": 3e-5,
 }
 
+
 def _is_weight(p: nn.Parameter) -> bool:
     """BN 权重和 bias 都是 1 维参数，不应参与 weight decay。"""
     return p.ndim >= 2
+
+
+def unfreeze_backbone(model: nn.Module) -> None:
+    """恢复 Backbone 所有参数的 requires_grad=True（Stage 1 → Stage 2 过渡时调用）。
+
+    只操作 backbone 内部的参数，确保 BatchNorm 层也被恢复。
+    """
+    backbone = model.backbone
+    for param in backbone.parameters():
+        param.requires_grad = True
+    # 确保 BN 层处于训练模式（fine-tuning 时需要更新 running stats）
+    for m in backbone.modules():
+        if isinstance(m, nn.BatchNorm2d):
+            m.train()
+
+
+def freeze_backbone(model: nn.Module) -> None:
+    """冻结 Backbone 所有参数（Stage 1 开始时调用）。"""
+    backbone = model.backbone
+    for param in backbone.parameters():
+        param.requires_grad = False
+    # BN 层设为 eval 模式，保留预训练统计量
+    for m in backbone.modules():
+        if isinstance(m, nn.BatchNorm2d):
+            m.eval()
 
 
 def build_llrd_param_groups(
@@ -42,7 +72,7 @@ def build_llrd_param_groups(
         freeze_backbone: 阶段一时冻结 Backbone
 
     Returns:
-        param_groups 列表
+        param_groups 列表，每组含 params / lr / weight_decay / name / initial_lr
     """
     lr_cfg = dict(_DEFAULT_LR_CONFIG)
     if cfg:
@@ -84,11 +114,16 @@ def build_llrd_param_groups(
             bb_last.extend(list(mod.parameters()))
 
     if freeze_backbone:
+        # 冻结 Backbone：设置 requires_grad=False，不创建 LR 组
         all_bb = bb_first + bb_mid + bb_last
         for p in all_bb:
             p.requires_grad = False
-        # 冻结时不需要创建 lr 组
     else:
+        # 确保 Backbone 参数可训练
+        all_bb = bb_first + bb_mid + bb_last
+        for p in all_bb:
+            p.requires_grad = True
+
         for name, lr_val, params in [
             ("backbone_last", lr_cfg["backbone_last"], bb_last),
             ("backbone_middle", lr_cfg["backbone_middle"], bb_mid),
@@ -101,9 +136,11 @@ def build_llrd_param_groups(
     result = []
     for name, lr_val, w_params, nw_params in groups_raw:
         if w_params:
-            result.append({"params": w_params, "lr": lr_val, "weight_decay": wd, "name": f"{name}_wd"})
+            result.append({"params": w_params, "lr": lr_val, "weight_decay": wd,
+                           "name": f"{name}_wd", "initial_lr": lr_val})
         if nw_params:
-            result.append({"params": nw_params, "lr": lr_val, "weight_decay": 0.0, "name": f"{name}_nowd"})
+            result.append({"params": nw_params, "lr": lr_val, "weight_decay": 0.0,
+                           "name": f"{name}_nowd", "initial_lr": lr_val})
 
     return result
 

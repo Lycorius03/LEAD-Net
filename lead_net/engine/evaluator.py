@@ -105,7 +105,17 @@ def _coco_eval_full(
         pred_path = f.name
 
     try:
-        coco_gt = dataset.coco
+        # TXT 格式数据集没有 .coco 属性，构建临时 COCO GT
+        if hasattr(dataset, "coco"):
+            coco_gt = dataset.coco
+        elif hasattr(dataset, "_coco_gt") and dataset._coco_gt is not None:
+            coco_gt = dataset._coco_gt
+        else:
+            coco_gt = _build_coco_gt_from_dataset(dataset, cfg)
+            if coco_gt is None:
+                print("[eval] TXT 数据集：使用简化评估（仅计数）")
+                return {"mAP@0.5": 0.0, "mAP@0.5:0.95": 0.0, "mAP@0.75": 0.0,
+                        "per_class": [], "note": "COCO eval not available for TXT dataset"}
         coco_dt = coco_gt.loadRes(pred_path)
 
         coco_eval = COCOeval(coco_gt, coco_dt, "bbox")
@@ -135,8 +145,113 @@ def _coco_eval_full(
         Path(pred_path).unlink(missing_ok=True)
 
 
+def _build_coco_gt_from_dataset(dataset, cfg: dict) -> Any | None:
+    """从 TXT 格式数据集临时构建 COCO GT 对象（用于 pycocotools 评估）。
+
+    仅在验证时调用，不影响训练性能。
+    构建完成后缓存在 dataset._coco_gt 上。
+    """
+    try:
+        from pycocotools.coco import COCO
+    except ImportError:
+        return None
+
+    coco_id_to_internal = cfg.get("coco_id_to_internal", {})
+    class_map = cfg.get("class_map", {})
+    num_classes = cfg.get("num_classes", 7)
+
+    images = []
+    annotations = []
+    ann_id = 0
+
+    for idx in range(len(dataset)):
+        img_path = dataset._image_paths[idx]
+        label_path = dataset._label_path(img_path)
+
+        # 获取图片尺寸
+        from PIL import Image
+        try:
+            img = Image.open(img_path)
+            w, h = img.size
+        except Exception:
+            w, h = 320, 320
+
+        images.append({
+            "id": idx,
+            "file_name": img_path.name,
+            "width": w,
+            "height": h,
+        })
+
+        # 解析标注
+        if label_path.is_file():
+            boxes, labels = dataset._parse_labels(label_path)
+            for box, label in zip(boxes, labels):
+                # box: [cx, cy, w, h] normalized
+                cx, cy, bw, bh = box.tolist()
+                x = (cx - bw / 2) * w
+                y = (cy - bh / 2) * h
+                bw_abs = bw * w
+                bh_abs = bh * h
+
+                if bw_abs <= 1 or bh_abs <= 1:
+                    continue
+
+                internal_id = int(label.item())
+                coco_id = None
+                for cid, iid in coco_id_to_internal.items():
+                    if iid == internal_id:
+                        coco_id = int(cid)
+                        break
+
+                if coco_id is None:
+                    continue
+
+                annotations.append({
+                    "id": ann_id,
+                    "image_id": idx,
+                    "category_id": coco_id,
+                    "bbox": [float(x), float(y), float(bw_abs), float(bh_abs)],
+                    "area": float(bw_abs * bh_abs),
+                    "iscrowd": 0,
+                })
+                ann_id += 1
+
+    # 构建 categories
+    categories = []
+    for coco_id, internal_id in coco_id_to_internal.items():
+        name = class_map.get(internal_id, class_map.get(str(internal_id), f"cls_{internal_id}"))
+        categories.append({
+            "id": int(coco_id),
+            "name": str(name),
+        })
+
+    gt_data = {
+        "images": images,
+        "annotations": annotations,
+        "categories": categories,
+    }
+
+    import tempfile, json
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False,
+                                      encoding="utf-8") as f:
+        json.dump(gt_data, f)
+        gt_path = f.name
+
+    try:
+        coco_gt = COCO(gt_path)
+        dataset._coco_gt = coco_gt  # 缓存
+        return coco_gt
+    finally:
+        import os
+        try:
+            os.unlink(gt_path)
+        except Exception:
+            pass
+
+
 def _extract_per_class_ap(coco_eval, cfg: dict) -> list[dict[str, Any]]:
-    """从 COCOeval 对象提取 per-class AP@0.5 / AP@0.5:0.95 / AP@0.75。
+    """从 COCOeval 对象提取 per-class AP。
 
     pycocotools 内部结构：
         coco_eval.eval["precision"]: [T, R, K, A, M]
