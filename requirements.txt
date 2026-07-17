@@ -21,6 +21,9 @@ pillow==12.2.0
 opencv-python==4.13.0.92
 pycocotools==2.0.11
 
+# --- YOLO 框架（LCA 注册 / 数据适配 / 权重映射）---
+ultralytics
+
 # --- 配置 / 日志 / 实验数据 ---
 pyyaml==6.0.3
 matplotlib==3.10.9
