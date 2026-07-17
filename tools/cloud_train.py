@@ -9,7 +9,9 @@
     每个变体训练完自动评估，输出对比报告。
 
 云端压榨参数（RTX 5090 32GB）：
-    - batch=512: YOLO11n @416 约 18GB 显存，32GB 充裕
+    - batch=256: 512 实测触发 TaskAlignedAssigner OOM 回退 CPU（2026-07-17，
+      assigner 中间张量 (bs, n_max_boxes, h*w) 随 batch 线性放大，峰值冲破 32GB）；
+      仍出现该警告再降 --batch 192 或 128
     - workers=24: 25 vCPU 留 1 个给系统
     - imgsz=416: 比本地 320 更高分辨率，小目标精度更好
     - cache="ram": 13576 张图约 3GB，90GB RAM 充裕
@@ -141,7 +143,7 @@ def main():
                         choices=list(YAMLS.keys()))
     parser.add_argument("--epochs", type=int, default=180)
     parser.add_argument("--imgsz", type=int, default=416)
-    parser.add_argument("--batch", type=int, default=512)
+    parser.add_argument("--batch", type=int, default=256)
     parser.add_argument("--workers", type=int, default=24)
     parser.add_argument("--smoke", action="store_true", help="1 epoch 冒烟")
     args = parser.parse_args()
