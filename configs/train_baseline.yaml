@@ -35,7 +35,7 @@ stage1_freeze_backbone:
   loss_change_threshold: 0.05
 
 stage2_joint_training:
-  epochs: 120
+  epochs: 180               # [CHANGED] 120→180 (mAP@120仍在上升, 预留收敛空间)
   early_stopping: false
   patience: 0
 
