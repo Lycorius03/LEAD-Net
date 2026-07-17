@@ -2,7 +2,7 @@
 
 **L**ightweight **E**dge-aware **A**ttention **D**etection **Net**work
 
-[English](README.md) | [中文](README_zh.md)
+[中文](README.md) | **English**
 
 > A real-time visual perception system for embedded devices — enabling a smart car to **see**, **track**, and **avoid** obstacles with a single RGB camera.
 
@@ -28,7 +28,7 @@ LEAD-Net is a lightweight computer vision system designed for resource-constrain
 
 LEAD-Net uses a **teacher–student distillation** architecture to bridge the gap between high-accuracy training and MCU-deployable inference:
 
-```
+```text
 YOLO11n + LCA(Neck)          Teacher model (proves LCA effectiveness, RQ1/RQ2)
        │
        ▼  Knowledge distillation
@@ -41,6 +41,7 @@ YOLO11n + LCA(Neck)          Teacher model (proves LCA effectiveness, RQ1/RQ2)
 ```
 
 ### Detection (Training-side)
+
 | Component | Description |
 |-----------|-------------|
 | Backbone | YOLO11n (Ultralytics, COCO-pretrained `yolo11n.pt`), 2.6M params, 6.5 GFLOPs |
@@ -49,6 +50,7 @@ YOLO11n + LCA(Neck)          Teacher model (proves LCA effectiveness, RQ1/RQ2)
 | Assigner | TaskAlignedAssigner (Ultralytics native) |
 
 ### Decision & Control (Deploy-side, class-agnostic)
+
 | Component | Description |
 |-----------|-------------|
 | Decision Engine | 5-layer filtering: confidence → ROI → distance → DL/CV fusion → risk |
@@ -58,11 +60,13 @@ YOLO11n + LCA(Neck)          Teacher model (proves LCA effectiveness, RQ1/RQ2)
 | Speed Controller | 5-level bbox area → speed mapping, auto-decelerate near target |
 | CV Fallback | Traditional vision backup: ground segmentation + blob detection |
 
-### UART Output Protocol (new)
-```
+### UART Output Protocol
+
+```text
 Detected:  "o{cx_offset},d{detected},a{area}\r\n"
 Lost:      "o0,d0,a0\r\n"
 ```
+
 | Field | Range | Meaning |
 |-------|-------|---------|
 | `o` | -160 ~ +160 | Target center offset from image center (negative=left, positive=right) |
@@ -126,8 +130,6 @@ bash scripts/train_cloud.sh smoke     # 1-epoch validation
 bash scripts/train_cloud.sh           # 4 variants × 180 epochs
 ```
 
-See [`docs/CLOUD_TRAIN_GUIDE.md`](docs/CLOUD_TRAIN_GUIDE.md) for full cloud setup.
-
 ### Evaluation
 
 ```bash
@@ -139,8 +141,8 @@ metrics = m.val(data='configs/lead_subset_ultralytics.yaml', imgsz=416)
 print(f'mAP@0.5: {metrics.box.map50:.4f}')
 "
 
-# Hard-scene subset evaluation (occlusion / small targets / red background)
-python tools/eval_hard_subsets.py --weights outputs/cloud/runs/lca_r16/weights/best.pt
+# Build hard-scene subsets (occlusion / small targets / red background)
+python tools/build_hard_subsets.py
 ```
 
 ---
@@ -176,8 +178,6 @@ LEAD-Net/
 ├── scripts/                     # Platform scripts (.sh + .ps1)
 ├── tests/                       # Unit tests
 ├── deploy/openmv/               # OpenMV deployment (MicroPython)
-├── docs/                        # Technical documentation
-├── docxs/                       # Research notes & design docs
 └── requirements.txt
 ```
 
@@ -214,6 +214,7 @@ python tools/dataset_stats_txt.py       # Dataset diagnostics
 | `lca_r32` | `yolo11n_lca_neck_r32.yaml` | ✓ Neck P3 | 32 | RQ2 ablation |
 
 Hard-scene subsets for LCA gain validation:
+
 - `small_targets`: 1,348 images (41.4%) — bbox <32px
 - `occlusion`: 464 images (14.25%) — multi-object with IoU>0.3
 - `red_background`: 149 images (4.58%) — red channel dominant
@@ -230,27 +231,10 @@ Hard-scene subsets for LCA gain validation:
 
 ---
 
-## Documentation
-
-| Doc | Content |
-|-----|---------|
-| [docs/HANDOFF_GUIDE.md](docs/HANDOFF_GUIDE.md) | **Start here** — full project handoff guide |
-| [docs/CLOUD_TRAIN_GUIDE.md](docs/CLOUD_TRAIN_GUIDE.md) | Cloud RTX 5090 training guide |
-| [docs/DEVLOG.md](docs/DEVLOG.md) | Development log (timestamped) |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Architecture design |
-| [docs/RESEARCH_QUESTION.md](docs/RESEARCH_QUESTION.md) | Research questions (RQ1-RQ5) |
-| [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md) | Experiment records |
-| [docxs/RESEARCH_YOLO11_LCA_UPGRADE.md](docxs/RESEARCH_YOLO11_LCA_UPGRADE.md) | YOLO11 upstream research |
-| [docxs/RESEARCH_MCU_DEPLOYABLE_DETECTORS.md](docxs/RESEARCH_MCU_DEPLOYABLE_DETECTORS.md) | MCU deployability research |
-| [docxs/DESIGN_YOLO11_LCA.md](docxs/DESIGN_YOLO11_LCA.md) | Design doc + dual-candidate validation |
-
----
-
 ## Tests
 
 ```bash
 python tests/test_imports.py         # Import smoke
-python tests/test_decode_eval.py     # Decode/eval coordinate verification
 python tests/test_lca.py             # LCA attention module
 python tests/test_data_pipeline.py   # Data pipeline
 python tests/test_kalman_filter.py   # Kalman filter
