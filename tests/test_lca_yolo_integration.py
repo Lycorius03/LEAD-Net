@@ -126,6 +126,31 @@ def test_detect_p3_consumes_lca_output():
         )
 
 
+# ------------------------------------------- bug 4: train() 丢弃重映射权重
+
+def test_remapper_sets_ckpt_for_train_handoff():
+    """load_pretrained_with_remapping 返回的模型必须带非空 ckpt。
+
+    ultralytics model.train()（engine/model.py:808）只有在 self.ckpt 为
+    truthy 时才把当前内存权重交给 trainer；否则 trainer 用 yaml 冷启动
+    随机初始化训练 —— 重映射的 448 项预训练权重被整体丢弃
+    （云端 smoke 实测 lca_r16 mAP@0.5=0.0011 vs baseline 0.216）。
+    """
+    from lead_net.models.yolo.weight_remapper import load_pretrained_with_remapping
+
+    model = load_pretrained_with_remapping(
+        str(_REPO_ROOT / "lead_net/models/yolo/yamls/yolo11n_lca_neck_r16.yaml"),
+        str(_REPO_ROOT / "yolo11n.pt"), lca_insert_index=17, verbose=False,
+    )
+    assert bool(model.ckpt), (
+        "self.ckpt 为空：model.train() 不会复用重映射权重，"
+        "trainer 将从随机初始化开始训练"
+    )
+    # 不得误触发 resume 逻辑（engine/model.py:797 检查 epoch>=0 且有 optimizer）
+    assert model.ckpt.get("epoch", -1) < 0, "ckpt 不应携带可 resume 的 epoch"
+    assert model.ckpt.get("optimizer") is None, "ckpt 不应携带 optimizer 状态"
+
+
 # ------------------------------------------------- 回归保护：初始恒等性 & eval 短路
 
 def test_initial_forward_is_identity_in_training():
@@ -155,6 +180,7 @@ def main():
     test_reduction_propagates_from_yaml()
     test_mip_differs_across_reductions()
     test_detect_p3_consumes_lca_output()
+    test_remapper_sets_ckpt_for_train_handoff()
     test_initial_forward_is_identity_in_training()
     test_eval_shortcut_preserved()
     print("[OK] LCA × ultralytics 集成测试通过：alpha 可学习、reduction 消融有效、Detect P3 接 LCA。")

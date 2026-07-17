@@ -109,6 +109,13 @@ def load_pretrained_with_remapping(
     if verbose:
         LOGGER.info(f"Transferred {len(final_csd)}/{len(model_state)} items from pretrained weights (with LCA remapping)")
 
+    # 关键：标记 ckpt 非空，使 model.train() 复用当前内存权重（2026-07-18 修复）。
+    # ultralytics engine/model.py:808 只在 self.ckpt 为 truthy 时才把 self.model
+    # 交给 trainer；YOLO(yaml) 构建的模型 ckpt 为空 → trainer 用 yaml 冷启动
+    # 随机初始化，重映射权重被整体丢弃（云端 smoke 实测 lca mAP≈0.001）。
+    # 不携带 epoch/optimizer，避免误触发 resume 逻辑（engine/model.py:797）。
+    model.ckpt = {"model": model.model}
+
     return model
 
 
