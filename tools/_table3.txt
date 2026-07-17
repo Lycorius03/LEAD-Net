@@ -1,0 +1,7 @@
+| 问题                              | 解决                                  |
+|---------------------------------|-------------------------------------|
+| `ModuleNotFoundError: lead_net` | 确认 `export PYTHONPATH=.`            |
+| 显存不足 OOM                        | 降 batch 到 256 或 128                 |
+| GPU 利用率低                        | 确认 cache=ram 生效，workers 调到 24       |
+| 数据集找不到                          | 检查 data/lead_subset/images/train 存在 |
+| 权重迁移失败                          | 检查 yolo11n.pt 在项目根目录（首次运行自动下载）      |

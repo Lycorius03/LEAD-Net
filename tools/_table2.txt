@@ -1,0 +1,6 @@
+| 变体         | YAML                      | 说明               | 论文角色             |
+|------------|---------------------------|------------------|------------------|
+| `baseline` | yolo11n_lead.yaml         | YOLO11n 7类，无 LCA | RQ1 对照基准         |
+| `lca_r16`  | yolo11n_lca_neck_r16.yaml | +LCA(Neck, r=16) | RQ1 主实验          |
+| `lca_r8`   | yolo11n_lca_neck_r8.yaml  | +LCA(Neck, r=8)  | RQ2 reduction 消融 |
+| `lca_r32`  | yolo11n_lca_neck_r32.yaml | +LCA(Neck, r=32) | RQ2 reduction 消融 |
