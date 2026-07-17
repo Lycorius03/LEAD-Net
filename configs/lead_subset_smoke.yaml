@@ -1,0 +1,12 @@
+# Smoke test dataset (100 train / 50 val)
+path: F:/LEAD-Net/data/lead_subset_smoke
+train: images/train
+val: images/val
+names:
+  0: person
+  1: bicycle
+  2: car
+  3: backpack
+  4: suitcase
+  5: chair
+  6: bottle
