@@ -7,7 +7,7 @@
 
 设计决策（面向 OpenMV H7 Plus 超轻量避障优化）：
     1. Edge-aware LCA: 特征梯度边缘引导
-    2. Adaptive Reduction: 压缩比 max(8, channels // reduction)
+    2. Adaptive Reduction: 压缩比 max(2, channels // reduction)
     3. Residual Attention Gate: 可学习 alpha，训练初期梯度平稳
     4. Obstacle Prior: 中下方空间先验（部署版预计算为常量）
 """
@@ -23,7 +23,7 @@ class LCA(nn.Module):
 
     Args:
         channels: 输入/输出通道数 C
-        reduction: 通道缩减比 r（实际 mip = max(8, channels // reduction)）
+        reduction: 通道缩减比 r（实际 mip = max(2, channels // reduction)）
         edge_guidance: 特征梯度边缘引导
         obstacle_prior: 固定空间先验（中下方高亮）
         residual_gate: 残差门控（可学习 alpha）
@@ -60,7 +60,9 @@ class LCA(nn.Module):
 
     def _build_layers(self, channels: int) -> None:
         """按真实 channels 建 conv/bn 层，BN identity 初始化保证不破坏预训练。"""
-        mip = max(8, channels // max(self.reduction, 1))
+        # 下限 2（原为 8）：Neck P3 注入点实际 64 通道（256 × width 0.25），
+        # 下限 8 会使 r=8/16/32 的 mip 全部为 8，reduction 消融失去变量（2026-07-18 修复）
+        mip = max(2, channels // max(self.reduction, 1))
         self.mip = mip
         self._real_channels = channels
         self.pool_h = nn.AdaptiveAvgPool2d((None, 1))
@@ -114,8 +116,10 @@ class LCA(nn.Module):
             # 刚重建时，BN 用 running stats（eval 模式）避免 batch stats 扰动
             self.bn1.eval()
 
-        # 如果 alpha 很小（<0.01），LCA 近似 identity，不计算 att 节省算力
-        if self.residual_gate and abs(self.alpha.item()) < 1e-4:
+        # eval 模式且 alpha 很小时，LCA 近似 identity，短路省算力（部署路径）。
+        # 注意：训练模式绝不能短路 —— alpha 初始为 0，短路会使 alpha 脱离计算图、
+        # 梯度恒 0、永远无法离开 0（LCA 死锁为恒等层，2026-07-18 修复）
+        if (not self.training) and self.residual_gate and abs(self.alpha.item()) < 1e-4:
             return identity
 
         # BN 在训练初期保持 eval（用 running stats），alpha 增大后切回 train
